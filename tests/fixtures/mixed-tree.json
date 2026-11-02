@@ -1,0 +1,39 @@
+{
+  "blockdevices": [
+    {
+      "name": "nvme0n1", "path": "/dev/nvme0n1", "type": "disk",
+      "size": 1099511627776, "model": "Example NVMe", "serial": "TEST-NVME-001",
+      "tran": "nvme", "mountpoints": [null],
+      "children": [
+        {
+          "name": "nvme0n1p1", "path": "/dev/nvme0n1p1", "type": "part",
+          "size": 536870912, "mountpoints": ["/boot/efi"]
+        },
+        {
+          "name": "nvme0n1p2", "path": "/dev/nvme0n1p2", "type": "part",
+          "size": 1098974756864, "mountpoints": [null],
+          "children": [
+            {
+              "name": "system-root", "path": "/dev/mapper/system-root", "type": "lvm",
+              "size": 549487378432, "mountpoints": ["/", "/mnt/작업 공간"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sda", "path": "/dev/sda", "type": "disk", "size": 34359738368,
+      "model": "Example USB", "serial": null, "tran": "usb", "mountpoints": [],
+      "children": [
+        {
+          "name": "sda1", "path": "/dev/sda1", "type": "part",
+          "size": 4294967296, "mountpoints": ["[SWAP]"]
+        }
+      ]
+    },
+    {
+      "name": "loop0", "path": "/dev/loop0", "type": "loop",
+      "size": 1048576, "mountpoints": ["/run/live/rootfs"]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "permissionGrants": {
+    "v2Migrated": true,
+    "permissionGrants": {
+      "allow": [
+        "read_file(/home/yskyh06/linux-workspace/litewin)",
+        "write_file(/home/yskyh06/linux-workspace/litewin)",
+        "command(git status)",
+        "command(git diff)",
+        "command(git log)",
+        "command(git show)",
+        "command(git branch)",
+        "command(git rev-parse)",
+        "command(npm test)",
+        "command(pytest)",
+        "command(cargo test)",
+        "command(go test)",
+        "command(ls)",
+        "command(cat)",
+        "command(head)",
+        "command(tail)",
+        "command(grep)",
+        "command(find)",
+        "command(wc)",
+        "read_url(github.com)",
+        "read_url(developer.mozilla.org)",
+        "read_url(docs.python.org)",
+        "read_url(go.dev)",
+        "read_url(nodejs.org)"
+      ],
+      "deny": [
+        "read_file(~/.ssh)",
+        "read_file(~/.aws)",
+        "read_file(~/.gnupg)",
+        "read_file(/etc/shadow)",
+        "read_file(/etc/sudoers)"
+      ],
+      "ask": [
+        "command(sudo)",
+        "command(rm -rf)",
+        "command(git push --force)",
+        "command(git reset --hard)",
+        "command(curl)",
+        "command(wget)",
+        "command(ssh)",
+        "command(gpg)"
+      ]
+    }
+  }
+}

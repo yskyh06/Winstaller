@@ -1,0 +1,6 @@
+/build/
+*.iso
+*.esd
+*.wim
+*.log
+

@@ -1,0 +1,20 @@
+[Unit]
+Description=Litewin Automated Windows 11 Deployment Service
+After=network-online.target systemd-networkd.service iwd.service
+Wants=network-online.target
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/litewin
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=no
+ExecStopPost=-/usr/bin/systemctl start getty@tty1.service
+
+[Install]
+WantedBy=multi-user.target
