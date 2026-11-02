@@ -4,10 +4,11 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_DIR="${PROJECT_ROOT}/packaging/archiso"
 OUT_DIR="${PROJECT_ROOT}/build/iso_out"
+CACHE_DIR="${PROJECT_ROOT}/build/cache/pacman"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${CACHE_DIR}"
 
 echo "[INFO] Starting Docker-based Archiso build (archlinux:latest)..."
 
@@ -15,6 +16,7 @@ docker run --rm --privileged \
     -v "${PROJECT_ROOT}:/workspace:ro" \
     -v "${PROFILE_DIR}:/profile:ro" \
     -v "${OUT_DIR}:/out" \
+    -v "${CACHE_DIR}:/var/cache/pacman/pkg" \
     archlinux:latest bash -c "
         set -euo pipefail
         sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
@@ -44,7 +46,7 @@ docker run --rm --privileged \
 
         mkarchiso -v -w /tmp/archiso-tmp -o /out /tmp/profile-merged
         cd /out && sha256sum litewin-*.iso > SHA256SUMS
-        chown -R ${HOST_UID}:${HOST_GID} /out
+        chown -R ${HOST_UID}:${HOST_GID} /out /var/cache/pacman/pkg
     "
 
 echo "[INFO] ISO build completed successfully in ${OUT_DIR}"
