@@ -12,8 +12,13 @@ void test_ansi_terminal_helpers() {
     assert(litewin::AnsiTerminal::color_yellow() == "\033[33m");
     assert(litewin::AnsiTerminal::color_red() == "\033[31m");
     assert(litewin::AnsiTerminal::color_gray() == "\033[90m");
+    assert(litewin::AnsiTerminal::color_teal() == "\033[38;2;137;220;235m");
+    assert(litewin::AnsiTerminal::color_lavender() == "\033[38;2;203;166;247m");
+    assert(litewin::AnsiTerminal::color_gold() == "\033[38;2;249;226;175m");
+    assert(litewin::AnsiTerminal::color_slate() == "\033[38;2;108;112;134m");
     assert(litewin::AnsiTerminal::bg_blue() == "\033[44m");
     assert(litewin::AnsiTerminal::bg_red() == "\033[41m");
+    assert(litewin::AnsiTerminal::bg_teal() == "\033[48;2;137;220;235m\033[38;2;17;17;27m");
 
     std::cout << "[PASS] test_ansi_terminal_helpers\n";
 }
@@ -68,11 +73,21 @@ void test_user_data_field_navigation() {
     std::cout << "[PASS] test_user_data_field_navigation\n";
 }
 
+void test_screen_actions_and_keys() {
+    assert(static_cast<int>(litewin::ScreenAction::Next) == 0);
+    assert(static_cast<int>(litewin::ScreenAction::Back) == 1);
+    assert(static_cast<int>(litewin::ScreenAction::Exit) == 2);
+    assert(static_cast<int>(litewin::Key::Back) == 3);
+
+    std::cout << "[PASS] test_screen_actions_and_keys\n";
+}
+
 int main() {
     test_ansi_terminal_helpers();
     test_terminal_dimensions();
     test_user_data_defaults();
     test_user_data_field_navigation();
+    test_screen_actions_and_keys();
     std::cout << "All TUI tests passed!\n";
     return 0;
 }

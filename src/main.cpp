@@ -160,73 +160,123 @@ int main(int argc, char* argv[]) {
         AnsiTerminal term;
         WinstallerTui tui(term);
 
-        // Screen 1: EULA & Disclaimer
-        if (!tui.prompt_eula()) {
-            term.clear();
-            std::cout << ">> [Winstaller] Installation cancelled by user at disclaimer. Exiting.\n";
-            return 0;
-        }
+        enum class SetupStep {
+            Eula = 0,
+            Wifi = 1,
+            Disk = 2,
+            Edition = 3,
+            Done = 4
+        };
 
-        // Screen 2: Network / Wi-Fi Check
-        (void)tui.prompt_wifi();
-
-        // Screen 3: Target Disk Selection
-        auto inv_res = inspect_disks();
+        SetupStep current_step = SetupStep::Eula;
         std::vector<DiskInfo> eligible_disks;
-        if (std::holds_alternative<DiskInventory>(inv_res)) {
-            const auto& disks = std::get<DiskInventory>(inv_res);
-            for (const auto& d : disks) {
-                auto eval = evaluate_disk_target(d);
-                if (eval.is_eligible ||
-                    eval.rejection_reason == DiskRejectionReason::has_partitions ||
-                    eval.rejection_reason == DiskRejectionReason::existing_signatures) {
-                    eligible_disks.push_back(d);
-                }
-            }
-        }
+        std::string chosen_disk;
 
-        if (eligible_disks.empty()) {
-            if (options.dry_run) {
-                DiskInfo mock_nvme;
-                mock_nvme.path = "/dev/nvme0n1";
-                mock_nvme.name = "nvme0n1";
-                mock_nvme.model = "Samsung 980 PRO (Dry-Run)";
-                mock_nvme.size_bytes = 256ULL * 1024 * 1024 * 1024;
-                mock_nvme.transport = "nvme";
-                eligible_disks.push_back(mock_nvme);
-            } else {
-                term.clear();
-                std::cerr << ">> [ERROR] No eligible internal disks (>= 32 GB) found. Exiting.\n";
-                return 1;
-            }
-        }
-
-        std::string chosen_disk = tui.prompt_disk_selection(eligible_disks);
-        if (chosen_disk.empty()) {
+        auto reboot_and_exit = [&]() {
             term.clear();
-            std::cout << ">> [Winstaller] Target disk selection cancelled. Exiting.\n";
-            return 0;
-        }
+            std::cout << "\033[2J\033[H>> [Winstaller] Installation aborted. Rebooting system...\n";
+            if (!options.dry_run) {
+                static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+            }
+            std::exit(0);
+        };
 
-        options.target_disk_path = chosen_disk;
-        for (const auto& d : eligible_disks) {
-            if (d.path == chosen_disk) {
-                options.target_disk_size = d.size_bytes;
+        while (current_step != SetupStep::Done) {
+            switch (current_step) {
+            case SetupStep::Eula: {
+                auto act = tui.prompt_eula();
+                if (act == ScreenAction::Exit) {
+                    reboot_and_exit();
+                }
+                current_step = SetupStep::Wifi;
+                break;
+            }
+            case SetupStep::Wifi: {
+                auto act = tui.prompt_wifi();
+                if (act == ScreenAction::Exit) {
+                    reboot_and_exit();
+                } else if (act == ScreenAction::Back) {
+                    current_step = SetupStep::Eula;
+                } else {
+                    current_step = SetupStep::Disk;
+                }
+                break;
+            }
+            case SetupStep::Disk: {
+                if (eligible_disks.empty()) {
+                    auto inv_res = inspect_disks();
+                    if (std::holds_alternative<DiskInventory>(inv_res)) {
+                        const auto& disks = std::get<DiskInventory>(inv_res);
+                        for (const auto& d : disks) {
+                            auto eval = evaluate_disk_target(d);
+                            if (eval.is_eligible ||
+                                eval.rejection_reason == DiskRejectionReason::has_partitions ||
+                                eval.rejection_reason == DiskRejectionReason::existing_signatures) {
+                                eligible_disks.push_back(d);
+                            }
+                        }
+                    }
+
+                    if (eligible_disks.empty()) {
+                        if (options.dry_run) {
+                            DiskInfo mock_nvme;
+                            mock_nvme.path = "/dev/nvme0n1";
+                            mock_nvme.name = "nvme0n1";
+                            mock_nvme.model = "Samsung 980 PRO (Dry-Run)";
+                            mock_nvme.size_bytes = 256ULL * 1024 * 1024 * 1024;
+                            mock_nvme.transport = "nvme";
+                            eligible_disks.push_back(mock_nvme);
+                        } else {
+                            term.clear();
+                            std::cerr << ">> [ERROR] No eligible internal disks (>= 32 GB) found. Rebooting in 5s...\n";
+                            std::this_thread::sleep_for(std::chrono::seconds(5));
+                            reboot_and_exit();
+                        }
+                    }
+                }
+
+                auto [act, disk] = tui.prompt_disk_selection(eligible_disks);
+                if (act == ScreenAction::Exit) {
+                    reboot_and_exit();
+                } else if (act == ScreenAction::Back) {
+                    current_step = SetupStep::Wifi;
+                } else {
+                    chosen_disk = disk;
+                    options.target_disk_path = chosen_disk;
+                    for (const auto& d : eligible_disks) {
+                        if (d.path == chosen_disk) {
+                            options.target_disk_size = d.size_bytes;
+                            break;
+                        }
+                    }
+                    current_step = SetupStep::Edition;
+                }
+                break;
+            }
+            case SetupStep::Edition: {
+                std::string oem_str;
+                if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
+                    oem_str = "Windows 11 Pro";
+                }
+                std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
+                auto [act, choice] = tui.prompt_edition_selection(oem_str, cached_mb > 0);
+                if (act == ScreenAction::Exit) {
+                    reboot_and_exit();
+                } else if (act == ScreenAction::Back) {
+                    current_step = SetupStep::Disk;
+                } else {
+                    options.image_index = choice.edition_index;
+                    options.edition_preference = choice.edition_name;
+                    options.unattend_options.language = choice.language;
+                    options.reuse_existing_esd = choice.reuse_existing_esd;
+                    current_step = SetupStep::Done;
+                }
+                break;
+            }
+            default:
                 break;
             }
         }
-
-        // Screen 4: Edition & Local Cache Selection
-        std::string oem_str;
-        if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
-            oem_str = "Windows 11 Pro";
-        }
-        std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
-        auto edition_choice = tui.prompt_edition_selection(oem_str, cached_mb > 0);
-        options.image_index = edition_choice.edition_index;
-        options.edition_preference = edition_choice.edition_name;
-        options.unattend_options.language = edition_choice.language;
-        options.reuse_existing_esd = edition_choice.reuse_existing_esd;
 
         term.clear();
     } else {
@@ -320,18 +370,24 @@ int main(int argc, char* argv[]) {
 
         std::cout << "\n   How would you like to proceed?\n"
                   << "   [1] Retry installation\n"
-                  << "   [2] Abort and exit to shell\n"
+                  << "   [2] Abort and reboot system\n"
                   << "   Select option [1-2]: ";
         int retry_choice = 2;
         if (!(std::cin >> retry_choice) || retry_choice != 1) {
             std::cin.clear();
-            std::cout << "   Aborting installation. Exiting to shell.\n";
+            std::cout << "   Aborting installation. Rebooting system...\n";
+            if (!options.dry_run) {
+                static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+            }
             return 0;
         }
 
         prompt_cache_and_wipe_mode(options, non_interactive);
         if (!confirm_disk_formatting(options, non_interactive)) {
-            std::cout << "   Retry cancelled by user. Exiting to shell.\n";
+            std::cout << "   Retry cancelled by user. Rebooting system...\n";
+            if (!options.dry_run) {
+                static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+            }
             return 0;
         }
         std::cout << "\n   Retrying installation pipeline...\n\n";
