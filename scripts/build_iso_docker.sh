@@ -42,6 +42,8 @@ docker run --rm --privileged \
         sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 10/' /tmp/profile-merged/pacman.conf || true
         ln -sf ../litewin.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/litewin.service
         ln -sf /usr/lib/systemd/system/systemd-networkd.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+        ln -sf /usr/lib/systemd/system/NetworkManager.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service
+        ln -sf /usr/lib/systemd/system/dhcpcd.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/dhcpcd.service
         ln -sf /usr/lib/systemd/system/iwd.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/iwd.service
 
         mkarchiso -v -w /tmp/archiso-tmp -o /out /tmp/profile-merged

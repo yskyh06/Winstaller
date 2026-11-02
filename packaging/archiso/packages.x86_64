@@ -15,6 +15,7 @@ dosfstools
 parted
 iwd
 dhcpcd
+networkmanager
 iproute2
 curl
 openssl
@@ -27,3 +28,4 @@ dbus-broker-units
 usb_modeswitch
 usbmuxd
 libimobiledevice
+terminus-font

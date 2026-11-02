@@ -228,7 +228,10 @@ InternetReachabilityResult probe_internet(
     InternetReachabilityResult result;
     result.is_online = false;
 
-    for (const auto& target : targets) {
+    const auto default_targets = default_internet_probe_targets();
+    const auto& active_targets = targets.empty() ? default_targets : targets;
+
+    for (const auto& target : active_targets) {
         ProbeSummary summary = probe_endpoint(target, early_exit);
         if (summary.is_reachable()) {
             result.is_online = true;

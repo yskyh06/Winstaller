@@ -1,4 +1,5 @@
 #include "ui/winstaller_tui.hpp"
+#include "platform/network_inspector.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/network_configurator.hpp"
 #include "platform/process_runner.hpp"
@@ -68,74 +69,98 @@ ScreenAction WinstallerTui::prompt_eula() {
 }
 
 ScreenAction WinstallerTui::prompt_wifi() {
-    term_.update_size();
-    draw_header("Network Setup");
-
-    int w = 76;
-    int h = 18;
-    int col = std::max(2, (term_.cols() - w) / 2);
-    int row = std::max(5, (term_.rows() - h) / 2);
-
-    term_.draw_box(row, col, w, h, "Network Connectivity", true);
-    term_.print_at(row + 2, col + 4, AnsiTerminal::color_slate() + "Probing network interfaces..." + AnsiTerminal::color_reset());
-
-    auto probe = probe_internet({}, true);
-    if (probe.is_online) {
-        term_.print_at(row + 2, col + 4, AnsiTerminal::color_green() + "[OK] Active Internet Connection Detected." + AnsiTerminal::color_reset() + "                    ");
-        term_.print_at(row + 4, col + 4, "Winstaller is connected and ready to download Windows images.");
-        term_.print_at(row + 6, col + 4, "Press Enter to continue, or B to return to EULA.");
-
-        term_.print_at(row + 14, col + 6, AnsiTerminal::bg_teal() + " [ Continue (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(row + 14, col + 32, " [ Back (B) ] ");
-        term_.print_at(row + 14, col + 48, " [ Exit & Reboot (Esc) ] ");
-
-        while (true) {
-            auto ev = term_.read_key(-1);
-            if (ev.key == Key::Enter) return ScreenAction::Next;
-            if (ev.key == Key::Back) return ScreenAction::Back;
-            if (ev.key == Key::Escape) return ScreenAction::Exit;
-        }
-    }
-
-    term_.print_at(row + 2, col + 4, AnsiTerminal::color_yellow() + "[!] No active internet connection detected." + AnsiTerminal::color_reset() + "              ");
-    term_.print_at(row + 4, col + 4, "You may connect to Wi-Fi now, or continue if you have a local ESD cache.");
-    term_.print_at(row + 6, col + 4, AnsiTerminal::color_gold() + "Options:" + AnsiTerminal::color_reset());
-    term_.print_at(row + 7, col + 6, "• Press " + AnsiTerminal::color_teal() + "Enter" + AnsiTerminal::color_reset() + " to open Wi-Fi / Network Manager (iwd / nmtui)");
-    term_.print_at(row + 8, col + 6, "• Press " + AnsiTerminal::color_teal() + "S" + AnsiTerminal::color_reset() + " to skip and continue in Offline Mode");
-    term_.print_at(row + 9, col + 6, "• Press " + AnsiTerminal::color_teal() + "B" + AnsiTerminal::color_reset() + " to go Back to the previous screen");
-    term_.print_at(row + 10, col + 6, "• Press " + AnsiTerminal::color_teal() + "Esc" + AnsiTerminal::color_reset() + " to exit and reboot the system");
-
-    term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Open Wi-Fi (Enter) ] " + AnsiTerminal::color_reset());
-    term_.print_at(row + 14, col + 30, " [ Skip (S) ] ");
-    term_.print_at(row + 14, col + 46, " [ Back (B) ] ");
-    term_.print_at(row + 14, col + 59, " [ Exit (Esc) ] ");
-
+    std::string status_notice;
     while (true) {
-        auto ev = term_.read_key(-1);
-        if (ev.key == Key::Enter) {
-            term_.show_cursor();
-            term_.exit_raw_mode();
-            (void)open_network_settings(NetworkConfigUiMode::tui_only);
-            term_.enter_raw_mode();
-            term_.hide_cursor();
-            auto post_probe = probe_internet({}, true);
-            if (post_probe.is_online) {
-                return ScreenAction::Next;
+        term_.update_size();
+        draw_header("Network Setup");
+
+        int w = 76;
+        int h = 18;
+        int col = std::max(2, (term_.cols() - w) / 2);
+        int row = std::max(5, (term_.rows() - h) / 2);
+
+        term_.draw_box(row, col, w, h, "Network Connectivity", true);
+        term_.print_at(row + 2, col + 4, AnsiTerminal::color_slate() + "Probing network interfaces..." + AnsiTerminal::color_reset());
+
+        bool ethernet_online = false;
+        auto inv_res = inspect_network_interfaces();
+        if (const auto* inv = std::get_if<NetworkInventory>(&inv_res)) {
+            ethernet_online = has_active_ethernet(*inv);
+        }
+
+        auto probe = probe_internet(default_internet_probe_targets(), true);
+        if (probe.is_online || ethernet_online) {
+            term_.print_at(row + 2, col + 4, AnsiTerminal::color_green() + "[OK] Active Internet Connection Detected." + AnsiTerminal::color_reset() + "                    ");
+            term_.print_at(row + 4, col + 4, "Winstaller is connected and ready to download Windows images.");
+            term_.print_at(row + 6, col + 4, "Press Enter to continue, W for Network Manager, or B to go Back.");
+
+            term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Continue (Enter) ] " + AnsiTerminal::color_reset());
+            term_.print_at(row + 14, col + 28, " [ Wi-Fi Tool (W) ] ");
+            term_.print_at(row + 14, col + 50, " [ Back (B) ] ");
+            term_.print_at(row + 14, col + 64, " [ Esc ] ");
+
+            while (true) {
+                auto ev = term_.read_key(-1);
+                if (ev.key == Key::Enter) return ScreenAction::Next;
+                if (ev.key == Key::Back) return ScreenAction::Back;
+                if (ev.key == Key::Escape) return ScreenAction::Exit;
+                if (ev.key == Key::Char && (ev.ch == 'w' || ev.ch == 'W')) {
+                    term_.show_cursor();
+                    term_.exit_raw_mode();
+                    (void)open_network_settings(NetworkConfigUiMode::tui_only);
+                    term_.enter_raw_mode();
+                    term_.hide_cursor();
+                    break;
+                }
             }
-            return prompt_wifi();
-        } else if (ev.key == Key::Char && (ev.ch == 's' || ev.ch == 'S')) {
-            return ScreenAction::Next;
-        } else if (ev.key == Key::Back) {
-            return ScreenAction::Back;
-        } else if (ev.key == Key::Escape) {
-            return ScreenAction::Exit;
+            continue;
+        }
+
+        term_.print_at(row + 2, col + 4, AnsiTerminal::color_yellow() + "[!] No active internet connection detected." + AnsiTerminal::color_reset() + "              ");
+        term_.print_at(row + 4, col + 4, "You may connect to Wi-Fi now, or continue if you have a local ESD cache.");
+        if (!status_notice.empty()) {
+            term_.print_at(row + 5, col + 4, AnsiTerminal::color_red() + status_notice.substr(0, 68) + AnsiTerminal::color_reset());
+        }
+        term_.print_at(row + 7, col + 6, "• Press " + AnsiTerminal::color_teal() + "Enter" + AnsiTerminal::color_reset() + " to open Wi-Fi / Network Manager (nmtui / iwctl)");
+        term_.print_at(row + 8, col + 6, "• Press " + AnsiTerminal::color_teal() + "R" + AnsiTerminal::color_reset() + " to rescan network connectivity");
+        term_.print_at(row + 9, col + 6, "• Press " + AnsiTerminal::color_teal() + "S" + AnsiTerminal::color_reset() + " to skip and continue in Offline Mode");
+        term_.print_at(row + 10, col + 6, "• Press " + AnsiTerminal::color_teal() + "B" + AnsiTerminal::color_reset() + " to go Back  |  " + AnsiTerminal::color_teal() + "Esc" + AnsiTerminal::color_reset() + " to Reboot");
+
+        term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Open Wi-Fi (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(row + 14, col + 29, " [ Rescan (R) ] ");
+        term_.print_at(row + 14, col + 46, " [ Skip (S) ] ");
+        term_.print_at(row + 14, col + 61, " [ Back (B) ] ");
+
+        bool re_probe = false;
+        while (!re_probe) {
+            auto ev = term_.read_key(-1);
+            if (ev.key == Key::Enter) {
+                term_.show_cursor();
+                term_.exit_raw_mode();
+                auto cfg_res = open_network_settings(NetworkConfigUiMode::tui_only);
+                term_.enter_raw_mode();
+                term_.hide_cursor();
+                if (!cfg_res.executed) {
+                    status_notice = cfg_res.error_message;
+                } else {
+                    status_notice.clear();
+                }
+                re_probe = true;
+            } else if (ev.key == Key::Char && (ev.ch == 'r' || ev.ch == 'R')) {
+                status_notice.clear();
+                re_probe = true;
+            } else if (ev.key == Key::Char && (ev.ch == 's' || ev.ch == 'S')) {
+                return ScreenAction::Next;
+            } else if (ev.key == Key::Back) {
+                return ScreenAction::Back;
+            } else if (ev.key == Key::Escape) {
+                return ScreenAction::Exit;
+            }
         }
     }
 }
 
 std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const std::vector<DiskInfo>& disks) {
-    if (disks.empty()) return {ScreenAction::Back, ""};
-
     term_.update_size();
     draw_header("Target Disk Selection");
 
@@ -143,6 +168,25 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
     int h = 18;
     int col = std::max(2, (term_.cols() - w) / 2);
     int row = std::max(5, (term_.rows() - h) / 2);
+
+    if (disks.empty()) {
+        term_.draw_box(row, col, w, h, "No Eligible Disk Found", true);
+        term_.print_at(row + 3, col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "[!] No eligible internal storage drives (>= 32 GB) found." + AnsiTerminal::color_reset());
+        term_.print_at(row + 5, col + 4, "Please verify that a target storage drive of at least 32 GB is attached");
+        term_.print_at(row + 6, col + 4, "and visible to the controller (NVMe / SATA / VirtIO / SCSI).");
+        term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Rescan Drives (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(row + 14, col + 34, " [ Back (B) ] ");
+        term_.print_at(row + 14, col + 50, " [ Exit & Reboot (Esc) ] ");
+
+        while (true) {
+            auto ev = term_.read_key(-1);
+            if (ev.key == Key::Enter || (ev.key == Key::Char && (ev.ch == 'r' || ev.ch == 'R'))) {
+                return {ScreenAction::Next, ""};
+            }
+            if (ev.key == Key::Back) return {ScreenAction::Back, ""};
+            if (ev.key == Key::Escape) return {ScreenAction::Exit, ""};
+        }
+    }
 
     term_.draw_box(row, col, w, h, "Target Storage Disk Selection", true);
     term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + "Select the target drive for Windows 11 installation:" + AnsiTerminal::color_reset());

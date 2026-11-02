@@ -203,36 +203,28 @@ int main(int argc, char* argv[]) {
                 break;
             }
             case SetupStep::Disk: {
-                if (eligible_disks.empty()) {
-                    auto inv_res = inspect_disks();
-                    if (std::holds_alternative<DiskInventory>(inv_res)) {
-                        const auto& disks = std::get<DiskInventory>(inv_res);
-                        for (const auto& d : disks) {
-                            auto eval = evaluate_disk_target(d);
-                            if (eval.is_eligible ||
-                                eval.rejection_reason == DiskRejectionReason::has_partitions ||
-                                eval.rejection_reason == DiskRejectionReason::existing_signatures) {
-                                eligible_disks.push_back(d);
-                            }
+                eligible_disks.clear();
+                auto inv_res = inspect_disks();
+                if (std::holds_alternative<DiskInventory>(inv_res)) {
+                    const auto& disks = std::get<DiskInventory>(inv_res);
+                    for (const auto& d : disks) {
+                        auto eval = evaluate_disk_target(d);
+                        if (eval.is_eligible ||
+                            eval.rejection_reason == DiskRejectionReason::has_partitions ||
+                            eval.rejection_reason == DiskRejectionReason::existing_signatures) {
+                            eligible_disks.push_back(d);
                         }
                     }
+                }
 
-                    if (eligible_disks.empty()) {
-                        if (options.dry_run) {
-                            DiskInfo mock_nvme;
-                            mock_nvme.path = "/dev/nvme0n1";
-                            mock_nvme.name = "nvme0n1";
-                            mock_nvme.model = "Samsung 980 PRO (Dry-Run)";
-                            mock_nvme.size_bytes = 256ULL * 1024 * 1024 * 1024;
-                            mock_nvme.transport = "nvme";
-                            eligible_disks.push_back(mock_nvme);
-                        } else {
-                            term.clear();
-                            std::cerr << ">> [ERROR] No eligible internal disks (>= 32 GB) found. Rebooting in 5s...\n";
-                            std::this_thread::sleep_for(std::chrono::seconds(5));
-                            reboot_and_exit();
-                        }
-                    }
+                if (eligible_disks.empty() && options.dry_run) {
+                    DiskInfo mock_nvme;
+                    mock_nvme.path = "/dev/nvme0n1";
+                    mock_nvme.name = "nvme0n1";
+                    mock_nvme.model = "Samsung 980 PRO (Dry-Run)";
+                    mock_nvme.size_bytes = 256ULL * 1024 * 1024 * 1024;
+                    mock_nvme.transport = "nvme";
+                    eligible_disks.push_back(mock_nvme);
                 }
 
                 auto [act, disk] = tui.prompt_disk_selection(eligible_disks);
@@ -240,7 +232,7 @@ int main(int argc, char* argv[]) {
                     reboot_and_exit();
                 } else if (act == ScreenAction::Back) {
                     current_step = SetupStep::Wifi;
-                } else {
+                } else if (!disk.empty()) {
                     chosen_disk = disk;
                     options.target_disk_path = chosen_disk;
                     for (const auto& d : eligible_disks) {

@@ -49,6 +49,7 @@ NetworkConfiguratorResult execute_tool(const char* tool_path, char* const argv[]
 
     if (pid == 0) {
         // Child process
+        ::setenv("TERM", "linux", 0);
         ::execvp(tool_path, argv);
         ::_exit(127);
     }
@@ -110,8 +111,14 @@ NetworkConfiguratorResult open_network_settings(NetworkConfigUiMode mode) {
         return execute_tool("nmtui", argv);
     }
 
+    if (command_exists("iwctl")) {
+        char cmd[] = "iwctl";
+        char* const argv[] = {cmd, nullptr};
+        return execute_tool("iwctl", argv);
+    }
+
     result.executed = false;
-    result.error_message = "Network configuration tool not found (neither nm-connection-editor nor nmtui is installed).";
+    result.error_message = "Network configuration tool not found (nmtui/iwctl not installed).";
     return result;
 }
 
