@@ -8,11 +8,22 @@
 
 namespace litewin {
 
+enum class ScreenAction {
+    Next,
+    Back,
+    Exit
+};
+
 struct TuiUserData {
     std::string username = "User";
     std::string password = "";
+    std::string password_confirm = "";
     std::string computer_name = "";
     bool finalized = false;
+
+    [[nodiscard]] bool password_matches() const noexcept {
+        return password == password_confirm;
+    }
 };
 
 struct TuiEditionChoice {
@@ -26,17 +37,17 @@ class WinstallerTui {
 public:
     explicit WinstallerTui(AnsiTerminal& term);
 
-    // Screen 1: EULA & Disclaimer (Returns true if accepted)
-    bool prompt_eula();
+    // Screen 1: EULA & Disclaimer
+    ScreenAction prompt_eula();
 
-    // Screen 2: Wi-Fi Setup (Returns true if connected or skipped)
-    bool prompt_wifi();
+    // Screen 2: Wi-Fi Setup
+    ScreenAction prompt_wifi();
 
-    // Screen 3: Target Disk Selection (Returns selected disk path, empty if cancelled)
-    std::string prompt_disk_selection(const std::vector<DiskInfo>& disks);
+    // Screen 3: Target Disk Selection
+    std::pair<ScreenAction, std::string> prompt_disk_selection(const std::vector<DiskInfo>& disks);
 
     // Screen 4: Windows Version & Edition Selection
-    TuiEditionChoice prompt_edition_selection(const std::string& detected_oem_edition, bool cached_esd_found);
+    std::pair<ScreenAction, TuiEditionChoice> prompt_edition_selection(const std::string& detected_oem_edition, bool cached_esd_found);
 
     // Screen 5: Live Deployment Dual-Pane View
     void render_progress(

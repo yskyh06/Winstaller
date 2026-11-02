@@ -55,19 +55,26 @@ void test_user_data_field_navigation() {
     // Simulate input: active_field 0 -> username
     user_data.username = "Admin";
     assert(user_data.username == "Admin");
+    assert(user_data.password_matches());
 
-    // Cycle fields: 0 -> 1 -> 2 -> 0
-    active_field = (active_field + 1) % 3;
+    // Cycle fields: 0 -> 1 -> 2 -> 3 -> 0
+    active_field = (active_field + 1) % 4;
     assert(active_field == 1);
     user_data.password = "Secr3t!";
     assert(user_data.password.size() == 7);
+    assert(!user_data.password_matches());
 
-    active_field = (active_field + 1) % 3;
+    active_field = (active_field + 1) % 4;
     assert(active_field == 2);
+    user_data.password_confirm = "Secr3t!";
+    assert(user_data.password_matches());
+
+    active_field = (active_field + 1) % 4;
+    assert(active_field == 3);
     user_data.computer_name = "MY-PC";
     assert(user_data.computer_name == "MY-PC");
 
-    active_field = (active_field + 1) % 3;
+    active_field = (active_field + 1) % 4;
     assert(active_field == 0);
 
     std::cout << "[PASS] test_user_data_field_navigation\n";

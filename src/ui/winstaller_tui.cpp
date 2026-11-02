@@ -299,7 +299,14 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
     int cur_row = 0; // 0 = Edition, 1 = Cache, 2 = Language
 
     while (true) {
-        term_.print_at(row + 5, col + 4, AnsiTerminal::color_bold() + "[1] Windows Edition:" + (cur_row == 0 ? " ◄" : "  ") + AnsiTerminal::color_reset());
+        auto row_marker = [&](int r, const std::string& label) {
+            if (cur_row == r) {
+                return AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + "> " + label + " < [ACTIVE]" + AnsiTerminal::color_reset() + "   ";
+            }
+            return AnsiTerminal::color_bold() + "  " + label + AnsiTerminal::color_reset() + "              ";
+        };
+
+        term_.print_at(row + 5, col + 4, row_marker(0, "[1] Windows Edition:"));
         if (choice.edition_index == 6) {
             term_.print_at(row + 6, col + 6, AnsiTerminal::color_teal() + "(*) Windows 11 Pro (Index 6) [Recommended]" + AnsiTerminal::color_reset());
             term_.print_at(row + 7, col + 6, AnsiTerminal::color_slate() + "( ) Windows 11 Home (Index 4)             " + AnsiTerminal::color_reset());
@@ -308,7 +315,7 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
             term_.print_at(row + 7, col + 6, AnsiTerminal::color_teal() + "(*) Windows 11 Home (Index 4) [Selected]   " + AnsiTerminal::color_reset());
         }
 
-        term_.print_at(row + 9, col + 4, AnsiTerminal::color_bold() + "[2] ESD Source:" + (cur_row == 1 ? " ◄" : "  ") + AnsiTerminal::color_reset());
+        term_.print_at(row + 9, col + 4, row_marker(1, "[2] ESD Source:"));
         if (cached_esd_found) {
             std::string esd_check = choice.reuse_existing_esd ? "[X] Reuse cached ESD on P5 (Fastest, skip download)" : "[ ] Fresh download from Microsoft CDN      ";
             term_.print_at(row + 10, col + 6, AnsiTerminal::color_green() + esd_check + AnsiTerminal::color_reset());
@@ -316,27 +323,35 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
             term_.print_at(row + 10, col + 6, AnsiTerminal::color_slate() + "[!] No local cache found (Will download from official CDN)" + AnsiTerminal::color_reset());
         }
 
-        std::string lang_label = "[ " + languages[lang_idx].second + " ] (Space to cycle)";
-        term_.print_at(row + 12, col + 4, AnsiTerminal::color_bold() + "[3] Target Language: " + (cur_row == 2 ? AnsiTerminal::color_teal() : "") + lang_label + "     " + AnsiTerminal::color_reset());
+        term_.print_at(row + 12, col + 4, row_marker(2, "[3] Target Language:"));
+        std::string lang_label = "<< " + languages[lang_idx].second + " >> (Space / Left / Right)";
+        term_.print_at(row + 13, col + 6, (cur_row == 2 ? (AnsiTerminal::bg_teal() + AnsiTerminal::color_bold()) : AnsiTerminal::color_gold()) + " " + lang_label + " " + AnsiTerminal::color_reset() + "          ");
 
-        term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Start (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(row + 15, col + 24, " [ Space: Toggle ] ");
-        term_.print_at(row + 15, col + 44, " [ Back (B) ] ");
-        term_.print_at(row + 15, col + 59, " [ Exit (Esc) ] ");
+        term_.print_at(row + 16, col + 4, AnsiTerminal::bg_teal() + " [ Start (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(row + 16, col + 24, " [ Up/Down: Move ] ");
+        term_.print_at(row + 16, col + 44, " [ Back (B) ] ");
+        term_.print_at(row + 16, col + 59, " [ Exit (Esc) ] ");
 
         auto ev = term_.read_key(-1);
         if (ev.key == Key::Up) {
             cur_row = (cur_row + 2) % 3;
+            if (cur_row == 1 && !cached_esd_found) cur_row = 0;
         } else if (ev.key == Key::Down || ev.key == Key::Tab) {
             cur_row = (cur_row + 1) % 3;
-        } else if (ev.key == Key::Space) {
+            if (cur_row == 1 && !cached_esd_found) cur_row = 2;
+        } else if (ev.key == Key::Space || ev.key == Key::Left || ev.key == Key::Right) {
             if (cur_row == 0) {
                 choice.edition_index = (choice.edition_index == 6) ? 4 : 6;
                 choice.edition_name = (choice.edition_index == 6) ? "Windows 11 Pro" : "Windows 11 Home";
             } else if (cur_row == 1 && cached_esd_found) {
                 choice.reuse_existing_esd = !choice.reuse_existing_esd;
             } else if (cur_row == 2) {
-                lang_idx = (lang_idx + 1) % static_cast<int>(languages.size());
+                int n = static_cast<int>(languages.size());
+                if (ev.key == Key::Left) {
+                    lang_idx = (lang_idx + n - 1) % n;
+                } else {
+                    lang_idx = (lang_idx + 1) % n;
+                }
                 choice.language = languages[lang_idx].first;
                 if (lang_idx != 0 && cached_esd_found) {
                     choice.reuse_existing_esd = false;
@@ -368,7 +383,7 @@ void WinstallerTui::render_progress(
     term_.print_at(2, col + 3, AnsiTerminal::color_bold() + AnsiTerminal::color_teal() + "✦ Windows 11 Zero-Touch Installation in Progress" + AnsiTerminal::color_reset());
 
     // Pipeline Box
-    term_.draw_box(4, col, w, 9, "Pipeline Status (" + step_name + ")", true);
+    term_.draw_box(4, col, w, 8, "Pipeline Status (" + step_name + ")", true);
     std::string safe_msg = detail_msg.substr(0, 68);
     term_.print_at(5, col + 4, safe_msg);
 
@@ -390,48 +405,78 @@ void WinstallerTui::render_progress(
     term_.print_at(9, col + 4, "Total Progress: [" + AnsiTerminal::color_lavender() + overall_bar + AnsiTerminal::color_reset() + "] " + std::to_string(overall_pct) + "%");
 
     // Interactive Customization Box during deploy
-    term_.draw_box(13, col, w, 10, "User Environment Customization (Optional, editable anytime)", true);
-    term_.print_at(14, col + 4, AnsiTerminal::color_slate() + "* Defaults ('User', no password, random PC) apply if left unchanged." + AnsiTerminal::color_reset());
+    term_.draw_box(12, col, w, 11, "User Environment Customization (Live Input Enabled)", true);
+    term_.print_at(13, col + 4, AnsiTerminal::color_slate() + "* Defaults ('User', no password, random PC) apply if left unchanged." + AnsiTerminal::color_reset());
 
     auto field_style = [&](int f) {
         return (active_field == f) ? (AnsiTerminal::bg_teal() + AnsiTerminal::color_bold()) : "";
     };
 
-    term_.print_at(16, col + 4, "1. Username      : " + field_style(0) + "[" + user_data.username + std::string(15 - user_data.username.size(), ' ') + "]" + AnsiTerminal::color_reset());
-    std::string masked_pw(user_data.password.size(), '*');
-    term_.print_at(17, col + 4, "2. Password      : " + field_style(1) + "[" + masked_pw + std::string(15 - masked_pw.size(), ' ') + "]" + AnsiTerminal::color_reset());
-    term_.print_at(18, col + 4, "3. Computer Name : " + field_style(2) + "[" + user_data.computer_name + std::string(15 - user_data.computer_name.size(), ' ') + "]" + AnsiTerminal::color_reset());
+    auto pad15 = [](const std::string& s) {
+        return s.size() < 15 ? (s + std::string(15 - s.size(), ' ')) : s.substr(0, 15);
+    };
 
-    term_.print_at(21, col + 4, AnsiTerminal::color_slate() + "[Tab/Arrows: Switch Field]   [Type/Backspace: Edit]   [Enter: Save]" + AnsiTerminal::color_reset());
+    std::string masked_pw(user_data.password.size(), '*');
+    std::string masked_pw2(user_data.password_confirm.size(), '*');
+
+    std::string pw_status;
+    if (user_data.password.empty() && user_data.password_confirm.empty()) {
+        pw_status = AnsiTerminal::color_slate() + "(No password)" + AnsiTerminal::color_reset();
+    } else if (user_data.password_matches()) {
+        pw_status = AnsiTerminal::color_green() + AnsiTerminal::color_bold() + "[OK: Matched]" + AnsiTerminal::color_reset();
+    } else {
+        pw_status = AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "[!: Mismatch]" + AnsiTerminal::color_reset();
+    }
+
+    term_.print_at(15, col + 4, "1. Username         : " + field_style(0) + "[" + pad15(user_data.username) + "]" + AnsiTerminal::color_reset());
+    term_.print_at(16, col + 4, "2. Password         : " + field_style(1) + "[" + pad15(masked_pw) + "]" + AnsiTerminal::color_reset());
+    term_.print_at(17, col + 4, "3. Confirm Password : " + field_style(2) + "[" + pad15(masked_pw2) + "]" + AnsiTerminal::color_reset() + " " + pw_status);
+    term_.print_at(18, col + 4, "4. Computer Name    : " + field_style(3) + "[" + pad15(user_data.computer_name) + "]" + AnsiTerminal::color_reset());
+
+    term_.print_at(20, col + 4, AnsiTerminal::color_slate() + "[Tab/Up/Down: Move]   [Type/Backspace: Edit]   [Enter: Confirm]" + AnsiTerminal::color_reset());
 }
 
 bool WinstallerTui::handle_user_data_input(TuiUserData& user_data, int& active_field) {
-    auto ev = term_.read_key(0); // Non-blocking
-    if (ev.key == Key::None) return false;
+    bool changed = false;
+    while (true) {
+        auto ev = term_.read_key(0); // Non-blocking drain
+        if (ev.key == Key::None) break;
 
-    if (ev.key == Key::Tab || ev.key == Key::Down) {
-        active_field = (active_field + 1) % 3;
-        return true;
-    } else if (ev.key == Key::Up) {
-        active_field = (active_field + 2) % 3;
-        return true;
-    } else if (ev.key == Key::Enter) {
-        user_data.finalized = true;
-        return true;
-    } else if (ev.key == Key::Backspace) {
-        std::string* target = (active_field == 0) ? &user_data.username :
-                              (active_field == 1) ? &user_data.password : &user_data.computer_name;
-        if (!target->empty()) target->pop_back();
-        return true;
-    } else if (ev.key == Key::Char || ev.key == Key::Space) {
-        std::string* target = (active_field == 0) ? &user_data.username :
-                              (active_field == 1) ? &user_data.password : &user_data.computer_name;
-        if (target->size() < 15) {
-            target->push_back(ev.ch);
+        auto get_target_field = [&]() -> std::string* {
+            switch (active_field) {
+            case 0: return &user_data.username;
+            case 1: return &user_data.password;
+            case 2: return &user_data.password_confirm;
+            default: return &user_data.computer_name;
+            }
+        };
+
+        if (ev.key == Key::Tab || ev.key == Key::Down) {
+            active_field = (active_field + 1) % 4;
+            changed = true;
+        } else if (ev.key == Key::Up) {
+            active_field = (active_field + 3) % 4;
+            changed = true;
+        } else if (ev.key == Key::Enter) {
+            if (active_field < 3) {
+                active_field = (active_field + 1) % 4;
+            } else if (user_data.password_matches()) {
+                user_data.finalized = true;
+            }
+            changed = true;
+        } else if (ev.key == Key::Backspace) {
+            std::string* target = get_target_field();
+            if (!target->empty()) target->pop_back();
+            changed = true;
+        } else if (ev.key == Key::Char || ev.key == Key::Space || ev.key == Key::Back) {
+            std::string* target = get_target_field();
+            if (target->size() < 15 && ev.ch >= 32 && ev.ch <= 126) {
+                target->push_back(ev.ch);
+            }
+            changed = true;
         }
-        return true;
     }
-    return false;
+    return changed;
 }
 
 bool WinstallerTui::prompt_reboot_countdown(int timeout_seconds) {

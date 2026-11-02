@@ -10,10 +10,13 @@
 
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -261,6 +264,9 @@ int main(int argc, char* argv[]) {
                     options.edition_preference = choice.edition_name;
                     options.unattend_options.language = choice.language;
                     options.reuse_existing_esd = choice.reuse_existing_esd;
+                    if (auto matched = find_esd_target(WindowsVersion::Win11_26H2, choice.language, "x64")) {
+                        options.esd_target = *matched;
+                    }
                     current_step = SetupStep::Done;
                 }
                 break;
@@ -289,16 +295,31 @@ int main(int argc, char* argv[]) {
         pipeline_tui = std::make_unique<WinstallerTui>(*pipeline_term);
     }
 
+    std::mutex tui_mtx;
+    std::string cur_step_name = "PreCheck";
+    int cur_step_pct = 0;
+    int cur_overall_pct = 0;
+    std::string cur_detail_msg = "Initializing installation pipeline...";
+
+    auto sync_user_data_to_options = [&]() {
+        options.unattend_options.username = user_data.username.empty() ? "User" : user_data.username;
+        if (user_data.password_matches()) {
+            options.unattend_options.password = user_data.password;
+        }
+        options.unattend_options.computer_name = user_data.computer_name;
+    };
+
     options.progress_callback = [&](PipelineStep step, int pct, const std::string& msg) {
         if (pipeline_tui) {
+            std::lock_guard<std::mutex> lock(tui_mtx);
             pipeline_tui->handle_user_data_input(user_data, active_tui_field);
-            if (!user_data.username.empty()) options.unattend_options.username = user_data.username;
-            if (!user_data.password.empty()) options.unattend_options.password = user_data.password;
-            if (!user_data.computer_name.empty()) options.unattend_options.computer_name = user_data.computer_name;
+            sync_user_data_to_options();
 
-            int step_pct = pct;
-            int overall_pct = (pct * 95) / 100;
-            pipeline_tui->render_progress(std::string(to_string(step)), step_pct, overall_pct, msg, user_data, active_tui_field);
+            cur_step_name = std::string(to_string(step));
+            cur_step_pct = pct;
+            cur_overall_pct = (pct * 95) / 100;
+            cur_detail_msg = msg;
+            pipeline_tui->render_progress(cur_step_name, cur_step_pct, cur_overall_pct, cur_detail_msg, user_data, active_tui_field);
         } else {
             std::cout << "   [" << to_string(step) << "] (" << pct << "%) " << msg << "\n";
         }
@@ -325,16 +346,64 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        std::atomic<bool> pipeline_active{true};
+        std::thread input_thread;
+        if (pipeline_tui) {
+            input_thread = std::thread([&]() {
+                while (pipeline_active.load()) {
+                    {
+                        std::lock_guard<std::mutex> lock(tui_mtx);
+                        if (pipeline_tui->handle_user_data_input(user_data, active_tui_field)) {
+                            sync_user_data_to_options();
+                            pipeline_tui->render_progress(cur_step_name, cur_step_pct, cur_overall_pct, cur_detail_msg, user_data, active_tui_field);
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                }
+            });
+        }
+
         auto result = InstallPipeline::execute(options);
+        pipeline_active.store(false);
+        if (input_thread.joinable()) {
+            input_thread.join();
+        }
 
         if (result.success) {
             if (pipeline_tui) {
-                bool auto_reboot = pipeline_tui->prompt_reboot_countdown(10);
-                if (!auto_reboot) {
-                    pipeline_term->clear();
-                    std::cout << ">> [Winstaller] Reboot countdown paused. Press Enter to reboot now: ";
-                    std::string dummy;
-                    std::getline(std::cin, dummy);
+                while (true) {
+                    while (!user_data.password_matches()) {
+                        pipeline_tui->render_progress("Complete", 100, 100, "Password mismatch! Please match passwords and press Enter.", user_data, active_tui_field);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
+                    }
+                    bool auto_reboot = pipeline_tui->prompt_reboot_countdown(10);
+                    if (auto_reboot) {
+                        break;
+                    }
+                    user_data.finalized = false;
+                    while (!user_data.finalized || !user_data.password_matches()) {
+                        pipeline_tui->render_progress("Complete", 100, 100, "Editing user settings. Press Enter on field 4 to save & reboot.", user_data, active_tui_field);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
+                    }
+                    break;
+                }
+                sync_user_data_to_options();
+                if (!options.dry_run) {
+                    fs::path p4_dir = fs::path(options.mount_root) / "p4";
+                    std::string p4_path = get_partition_device_path(options.target_disk_path, 4);
+                    auto mnt = DiskPartitioner::mount_partition(p4_path, p4_dir.string(), "ntfs", false);
+                    if (mnt.success) {
+                        std::error_code ec;
+                        fs::path panther_dir = p4_dir / "Windows" / "Panther";
+                        fs::create_directories(panther_dir, ec);
+                        std::ofstream unattend_file(panther_dir / "unattend.xml");
+                        if (unattend_file) {
+                            unattend_file << UnattendGenerator::generate_xml(options.unattend_options);
+                        }
+                        static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), false));
+                    }
                 }
             } else {
                 std::cout << "\n===============================================================\n"
