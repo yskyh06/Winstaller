@@ -5,6 +5,10 @@
 #include "platform/install_pipeline.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/process_runner.hpp"
+#include "ui/ansi_terminal.hpp"
+#include "ui/winstaller_tui.hpp"
+
+#include <unistd.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -148,27 +152,29 @@ int main(int argc, char* argv[]) {
         std::cout << ">> [INFO] Running in DRY-RUN mode. Hardware will not be modified.\n\n";
     }
 
-    // 2. Hardware Pre-scan: Network Probe
-    std::cout << ">> [1/4] Checking network connectivity...\n";
-    auto probe_res = probe_internet(default_internet_probe_targets(), true);
-    if (!probe_res.is_online && options.custom_esd_path.empty()) {
-        std::cout << "   [WARNING] Internet connection not detected!\n"
-                  << "   Please connect an Ethernet cable or connect your smartphone via USB Tethering.\n";
-        if (!options.dry_run) {
-            std::cerr << "   Cannot download ESD without active internet. Aborting.\n";
-            return 1;
-        }
-    } else {
-        std::cout << "   Internet connection verified.\n";
-    }
+    TuiUserData user_data;
+    int active_tui_field = 0;
 
-    // 3. Hardware Pre-scan: Disk Inventory & Auto-Targeting
-    std::cout << "\n>> [2/4] Scanning internal storage devices...\n";
-    if (options.target_disk_path.empty()) {
+    // Interactive TUI Flow (Screens 1 to 4) when run in terminal
+    if (!non_interactive && isatty(STDIN_FILENO)) {
+        AnsiTerminal term;
+        WinstallerTui tui(term);
+
+        // Screen 1: EULA & Disclaimer
+        if (!tui.prompt_eula()) {
+            term.clear();
+            std::cout << ">> [Winstaller] Installation cancelled by user at disclaimer. Exiting.\n";
+            return 0;
+        }
+
+        // Screen 2: Network / Wi-Fi Check
+        (void)tui.prompt_wifi();
+
+        // Screen 3: Target Disk Selection
         auto inv_res = inspect_disks();
+        std::vector<DiskInfo> eligible_disks;
         if (std::holds_alternative<DiskInventory>(inv_res)) {
             const auto& disks = std::get<DiskInventory>(inv_res);
-            std::vector<DiskInfo> eligible_disks;
             for (const auto& d : disks) {
                 auto eval = evaluate_disk_target(d);
                 if (eval.is_eligible ||
@@ -177,84 +183,89 @@ int main(int argc, char* argv[]) {
                     eligible_disks.push_back(d);
                 }
             }
-
-            if (eligible_disks.empty()) {
-                if (fs::exists("/sys/bus/pci/drivers/vmd")) {
-                    std::cout << "   [NOTICE] Intel VMD controller is active, but no NVMe drives are visible.\n"
-                              << "   Please disable Intel VMD/RST in BIOS setup if your disk is hidden.\n";
-                }
-                if (options.dry_run) {
-                    options.target_disk_path = "/dev/nvme0n1";
-                    options.target_disk_size = 256ULL * 1024 * 1024 * 1024;
-                    std::cout << "   [DRY-RUN] Fallback to simulated target: " << options.target_disk_path << " (256 GB)\n";
-                } else {
-                    std::cerr << "   No eligible internal install disk found (>= 32 GB, unmounted). Aborting.\n";
-                    return 1;
-                }
-            } else if (eligible_disks.size() == 1 && eligible_disks[0].children.empty()) {
-                options.target_disk_path = eligible_disks[0].path;
-                options.target_disk_size = eligible_disks[0].size_bytes;
-                std::cout << "   [AUTO-SELECTED] " << options.target_disk_path
-                          << " (" << (options.target_disk_size / (1024 * 1024 * 1024)) << " GB"
-                          << (eligible_disks[0].model ? ", " + *eligible_disks[0].model : "") << ")\n";
-            } else {
-                std::cout << "   Eligible disks found:\n";
-                for (std::size_t i = 0; i < eligible_disks.size(); ++i) {
-                    std::cout << "   [" << (i + 1) << "] " << eligible_disks[i].path
-                              << " (" << (eligible_disks[i].size_bytes / (1024 * 1024 * 1024)) << " GB"
-                              << (eligible_disks[i].model ? ", " + *eligible_disks[i].model : "")
-                              << (!eligible_disks[i].children.empty() ? " - Existing Partitions" : "") << ")\n";
-                }
-                if (non_interactive) {
-                    options.target_disk_path = eligible_disks[0].path;
-                    options.target_disk_size = eligible_disks[0].size_bytes;
-                } else {
-                    std::cout << "   Select disk number [1-" << eligible_disks.size() << "]: ";
-                    int choice = 1;
-                    if (std::cin >> choice && choice >= 1 && choice <= static_cast<int>(eligible_disks.size())) {
-                        options.target_disk_path = eligible_disks[choice - 1].path;
-                        options.target_disk_size = eligible_disks[choice - 1].size_bytes;
-                    } else {
-                        std::cin.clear();
-                        std::cin.ignore(10000, '\n');
-                        options.target_disk_path = eligible_disks[0].path;
-                        options.target_disk_size = eligible_disks[0].size_bytes;
-                    }
-                }
-            }
-        } else if (options.dry_run) {
-            options.target_disk_path = "/dev/nvme0n1";
-            options.target_disk_size = 256ULL * 1024 * 1024 * 1024;
-            std::cout << "   [DRY-RUN] Fallback target: " << options.target_disk_path << "\n";
         }
+
+        if (eligible_disks.empty()) {
+            if (options.dry_run) {
+                DiskInfo mock_nvme;
+                mock_nvme.path = "/dev/nvme0n1";
+                mock_nvme.name = "nvme0n1";
+                mock_nvme.model = "Samsung 980 PRO (Dry-Run)";
+                mock_nvme.size_bytes = 256ULL * 1024 * 1024 * 1024;
+                mock_nvme.transport = "nvme";
+                eligible_disks.push_back(mock_nvme);
+            } else {
+                term.clear();
+                std::cerr << ">> [ERROR] No eligible internal disks (>= 32 GB) found. Exiting.\n";
+                return 1;
+            }
+        }
+
+        std::string chosen_disk = tui.prompt_disk_selection(eligible_disks);
+        if (chosen_disk.empty()) {
+            term.clear();
+            std::cout << ">> [Winstaller] Target disk selection cancelled. Exiting.\n";
+            return 0;
+        }
+
+        options.target_disk_path = chosen_disk;
+        for (const auto& d : eligible_disks) {
+            if (d.path == chosen_disk) {
+                options.target_disk_size = d.size_bytes;
+                break;
+            }
+        }
+
+        // Screen 4: Edition & Local Cache Selection
+        std::string oem_str;
+        if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
+            oem_str = "Windows 11 Pro";
+        }
+        std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
+        auto edition_choice = tui.prompt_edition_selection(oem_str, cached_mb > 0);
+        options.image_index = edition_choice.edition_index;
+        options.edition_preference = edition_choice.edition_name;
+        options.unattend_options.language = edition_choice.language;
+        options.reuse_existing_esd = edition_choice.reuse_existing_esd;
+
+        term.clear();
     } else {
-        std::cout << "   Manual target disk specified: " << options.target_disk_path << "\n";
+        // Fallback for non-interactive / pipe mode
+        if (options.target_disk_path.empty()) {
+            options.target_disk_path = "/dev/nvme0n1";
+            options.target_disk_size = 64ULL * 1024 * 1024 * 1024;
+        }
+        prompt_cache_and_wipe_mode(options, non_interactive);
     }
 
-    // 4. Target Windows Configuration & Cache/Wipe Confirmation
-    prompt_cache_and_wipe_mode(options, non_interactive);
-
-    std::cout << "\n>> [3/4] Deployment Target Configuration:\n"
-              << "   - OS Target: Windows 11 26H2 (Korean ko-kr, x64, " << options.edition_preference << ")\n"
-              << "   - Destination: " << options.target_disk_path << "\n"
-              << "   - ESD Mode: " << (options.reuse_existing_esd ? "Reuse Cached ESD on P5" : "Full Disk Format & Download") << "\n"
-              << "   - BitLocker Protection: Auto-Disabled (PreventDeviceEncryption)\n"
-              << "   - Privacy: Telemetry Disabled, Advertising ID Disabled\n"
-              << "   - First User: " << options.unattend_options.username << " (Auto-Logon)\n\n";
-
-    if (!confirm_disk_formatting(options, non_interactive)) {
-        std::cout << "   Installation cancelled by user. Exiting to shell.\n";
-        return 0;
+    // 5. Connect Progress Bar & Execute Pipeline
+    bool is_interactive_tui = (!non_interactive && isatty(STDIN_FILENO));
+    std::unique_ptr<AnsiTerminal> pipeline_term;
+    std::unique_ptr<WinstallerTui> pipeline_tui;
+    if (is_interactive_tui) {
+        pipeline_term = std::make_unique<AnsiTerminal>();
+        pipeline_tui = std::make_unique<WinstallerTui>(*pipeline_term);
     }
-    std::cout << "\n";
 
-    // 5. Connect Progress Bar & Execute Pipeline (with interactive Retry/Abort loop)
-    options.progress_callback = [](PipelineStep step, int pct, const std::string& msg) {
-        std::cout << "   [" << to_string(step) << "] (" << pct << "%) " << msg << "\n";
+    options.progress_callback = [&](PipelineStep step, int pct, const std::string& msg) {
+        if (pipeline_tui) {
+            pipeline_tui->handle_user_data_input(user_data, active_tui_field);
+            if (!user_data.username.empty()) options.unattend_options.username = user_data.username;
+            if (!user_data.password.empty()) options.unattend_options.password = user_data.password;
+            if (!user_data.computer_name.empty()) options.unattend_options.computer_name = user_data.computer_name;
+
+            int step_pct = pct;
+            int overall_pct = (pct * 95) / 100;
+            pipeline_tui->render_progress(std::string(to_string(step)), step_pct, overall_pct, msg, user_data, active_tui_field);
+        } else {
+            std::cout << "   [" << to_string(step) << "] (" << pct << "%) " << msg << "\n";
+        }
     };
 
     while (true) {
-        std::cout << ">> [4/4] Executing Zero-Touch Installation Pipeline...\n";
+        if (!pipeline_tui) {
+            std::cout << ">> [4/4] Executing Zero-Touch Installation Pipeline...\n";
+        }
         if (!options.dry_run) {
             fs::path mroot(options.mount_root);
             static_cast<void>(DiskPartitioner::unmount_partition((mroot / "p2").string(), false));
@@ -274,20 +285,31 @@ int main(int argc, char* argv[]) {
 
         auto result = InstallPipeline::execute(options);
 
-        std::cout << "\n===============================================================\n";
         if (result.success) {
-            std::cout << ">> [SUCCESS] Windows 11 26H2 successfully installed onto " << options.target_disk_path << "!\n"
-                      << "   WinPE staged on ESP. Next reboot will run bcdboot in 3 seconds.\n"
-                      << "===============================================================\n\n";
+            if (pipeline_tui) {
+                bool auto_reboot = pipeline_tui->prompt_reboot_countdown(10);
+                if (!auto_reboot) {
+                    pipeline_term->clear();
+                    std::cout << ">> [Winstaller] Reboot countdown paused. Press Enter to reboot now: ";
+                    std::string dummy;
+                    std::getline(std::cin, dummy);
+                }
+            } else {
+                std::cout << "\n===============================================================\n"
+                          << ">> [SUCCESS] Windows 11 successfully installed onto " << options.target_disk_path << "!\n"
+                          << "   WinPE staged on ESP. Next reboot will run bcdboot.\n"
+                          << "===============================================================\n\n";
+            }
 
             if (!options.dry_run) {
-                std::cout << ">> Rebooting system into Windows in 3 seconds...\n";
-                std::this_thread::sleep_for(std::chrono::seconds(3));
                 static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
             }
             return 0;
         }
 
+        if (pipeline_term) {
+            pipeline_term->clear();
+        }
         std::cerr << ">> [FAILED] Installation stopped at " << to_string(result.failed_step) << "!\n"
                   << "   Error: " << result.error_message << "\n"
                   << "===============================================================\n";

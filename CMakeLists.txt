@@ -30,6 +30,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/platform/wim_deployer.cpp
         src/platform/winpe_bootstrapper.cpp
         src/platform/install_pipeline.cpp
+        src/ui/ansi_terminal.cpp
+        src/ui/winstaller_tui.cpp
     )
     target_link_libraries(litewin_network PUBLIC CURL::libcurl OpenSSL::Crypto)
     target_include_directories(litewin_network SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
@@ -220,5 +222,12 @@ if(BUILD_TESTING)
             target_compile_options(install_pipeline_tests PRIVATE -Wall -Wextra -Wpedantic)
         endif()
         add_test(NAME "pipeline.integration_tests" COMMAND install_pipeline_tests)
+
+        add_executable(tui_tests tests/tui_tests.cpp)
+        target_link_libraries(tui_tests PRIVATE litewin_network litewin_inventory)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(tui_tests PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME "ui.tui_unit_tests" COMMAND tui_tests)
     endif()
 endif()
