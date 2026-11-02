@@ -17,6 +17,7 @@ docker run --rm --privileged \
     -v "${OUT_DIR}:/out" \
     archlinux:latest bash -c "
         set -euo pipefail
+        sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
         pacman -Syu --noconfirm archiso grub base-devel cmake ninja curl openssl gtest
 
         echo '[INFO] Building native Arch Linux litewin binary...'
@@ -36,6 +37,7 @@ docker run --rm --privileged \
         chmod 0755 /tmp/profile-merged/airootfs/usr/local/bin/litewin
 
         mkdir -p /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants
+        sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 10/' /tmp/profile-merged/pacman.conf || true
         ln -sf ../litewin.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/litewin.service
         ln -sf /usr/lib/systemd/system/systemd-networkd.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/systemd-networkd.service
         ln -sf /usr/lib/systemd/system/iwd.service /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants/iwd.service
