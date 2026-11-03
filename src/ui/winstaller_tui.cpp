@@ -264,20 +264,96 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
     return {ScreenAction::Next, chosen_disk};
 }
 
+void WinstallerTui::show_edition_modal(TuiEditionChoice& choice) {
+    term_.update_size();
+    int m_w = 58;
+    int m_h = 9;
+    int m_col = std::max(2, (term_.cols() - m_w) / 2);
+    int m_row = std::max(6, (term_.rows() - m_h) / 2);
+
+    int cur_sel = (choice.edition_index == 6) ? 1 : 0; // 0 = Home, 1 = Pro
+
+    while (true) {
+        term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
+        term_.draw_box(m_row, m_col, m_w, m_h, "Select Windows Edition", true);
+
+        if (cur_sel == 0) {
+            term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) Windows 11 Home (Index 4) [Consumer Standard]" + AnsiTerminal::color_reset());
+            term_.print_at(m_row + 3, m_col + 4, AnsiTerminal::color_slate() + "   ( ) Windows 11 Pro  (Index 6) [Professional]" + AnsiTerminal::color_reset());
+        } else {
+            term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_slate() + "   ( ) Windows 11 Home (Index 4) [Consumer Standard]" + AnsiTerminal::color_reset());
+            term_.print_at(m_row + 3, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) Windows 11 Pro  (Index 6) [Professional]" + AnsiTerminal::color_reset());
+        }
+
+        term_.print_at(m_row + 6, m_col + 8, AnsiTerminal::bg_teal() + " [ Select (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(m_row + 6, m_col + 32, " [ Cancel (Esc) ] ");
+
+        auto ev = term_.read_key(-1);
+        if (ev.key == Key::Up || ev.key == Key::Down || ev.key == Key::Tab) {
+            cur_sel = 1 - cur_sel;
+        } else if (ev.key == Key::Enter) {
+            if (cur_sel == 0) {
+                choice.edition_index = 4;
+                choice.edition_name = "Windows 11 Home";
+            } else {
+                choice.edition_index = 6;
+                choice.edition_name = "Windows 11 Pro";
+            }
+            break;
+        } else if (ev.key == Key::Escape) {
+            break;
+        }
+    }
+}
+
+void WinstallerTui::show_language_modal(TuiEditionChoice& choice, int& lang_idx, const std::vector<std::pair<std::string, std::string>>& languages) {
+    term_.update_size();
+    int m_w = 60;
+    int m_h = 13;
+    int m_col = std::max(2, (term_.cols() - m_w) / 2);
+    int m_row = std::max(5, (term_.rows() - m_h) / 2);
+
+    int cur_sel = lang_idx;
+    int n = static_cast<int>(languages.size());
+
+    while (true) {
+        term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
+        term_.draw_box(m_row, m_col, m_w, m_h, "Select Target Language", true);
+
+        for (int i = 0; i < n && i < 7; ++i) {
+            int line_row = m_row + 2 + i;
+            if (i == cur_sel) {
+                term_.print_at(line_row, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) " + languages[i].second + AnsiTerminal::color_reset());
+            } else {
+                term_.print_at(line_row, m_col + 4, AnsiTerminal::color_slate() + "   ( ) " + languages[i].second + AnsiTerminal::color_reset());
+            }
+        }
+
+        term_.print_at(m_row + 10, m_col + 10, AnsiTerminal::bg_teal() + " [ Select (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(m_row + 10, m_col + 36, " [ Cancel (Esc) ] ");
+
+        auto ev = term_.read_key(-1);
+        if (ev.key == Key::Up) {
+            cur_sel = (cur_sel + n - 1) % n;
+        } else if (ev.key == Key::Down || ev.key == Key::Tab) {
+            cur_sel = (cur_sel + 1) % n;
+        } else if (ev.key == Key::Enter) {
+            lang_idx = cur_sel;
+            choice.language = languages[lang_idx].first;
+            break;
+        } else if (ev.key == Key::Escape) {
+            break;
+        }
+    }
+}
+
 std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selection(const std::string& detected_oem_edition, bool cached_esd_found) {
     term_.update_size();
-    draw_header("Windows Edition Selection");
 
     int w = 76;
-    int h = 19;
+    int h = 18;
     int col = std::max(2, (term_.cols() - w) / 2);
     int row = std::max(5, (term_.rows() - h) / 2);
-
-    term_.draw_box(row, col, w, h, "Windows Edition & Options", true);
-
-    term_.print_at(row + 2, col + 4, "System Architecture: " + AnsiTerminal::color_bold() + "x86_64 (64-bit UEFI)" + AnsiTerminal::color_reset());
-    std::string oem_str = detected_oem_edition.empty() ? "None (Default to Home)" : (detected_oem_edition + " (Detected)");
-    term_.print_at(row + 3, col + 4, "ACPI OEM License   : " + AnsiTerminal::color_green() + oem_str + AnsiTerminal::color_reset());
 
     TuiEditionChoice choice;
     // Default to Home (Index 4) for consumer OEM standard, upgrade to Pro only if detected
@@ -301,69 +377,76 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
         {"es-ES", "Spanish (es-ES)"}
     };
     int lang_idx = 0;
-    int cur_row = 0; // 0 = Edition, 1 = Cache, 2 = Language
+    int cur_row = 0; // 0 = Edition, 1 = Language, 2 = Install Source, 3 = Start Button
 
     while (true) {
-        auto row_marker = [&](int r, const std::string& label) {
-            if (cur_row == r) {
-                return AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + "> " + label + " < [ACTIVE]" + AnsiTerminal::color_reset() + "   ";
-            }
-            return AnsiTerminal::color_bold() + "  " + label + AnsiTerminal::color_reset() + "              ";
+        draw_header("Installation Options");
+        term_.draw_box(row, col, w, h, "Installation Options", true);
+
+        term_.print_at(row + 2, col + 4, "System Architecture: " + AnsiTerminal::color_bold() + "x86_64" + AnsiTerminal::color_reset());
+        std::string oem_str = detected_oem_edition.empty() ? "None (Default: Home)" : (detected_oem_edition + " [Detected]");
+        term_.print_at(row + 3, col + 4, "ACPI OEM License   : " + AnsiTerminal::color_green() + oem_str + AnsiTerminal::color_reset());
+
+        auto row_active = [&](int r) {
+            return cur_row == r ? (AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + "> " + AnsiTerminal::color_reset()) : "  ";
         };
 
-        term_.print_at(row + 5, col + 4, row_marker(0, "[1] Windows Edition:"));
-        if (choice.edition_index == 6) {
-            term_.print_at(row + 6, col + 6, AnsiTerminal::color_teal() + "(*) Windows 11 Pro (Index 6) [Recommended]" + AnsiTerminal::color_reset());
-            term_.print_at(row + 7, col + 6, AnsiTerminal::color_slate() + "( ) Windows 11 Home (Index 4)             " + AnsiTerminal::color_reset());
-        } else {
-            term_.print_at(row + 6, col + 6, AnsiTerminal::color_slate() + "( ) Windows 11 Pro (Index 6)             " + AnsiTerminal::color_reset());
-            term_.print_at(row + 7, col + 6, AnsiTerminal::color_teal() + "(*) Windows 11 Home (Index 4) [Selected]   " + AnsiTerminal::color_reset());
-        }
+        // Row 0: Windows Edition
+        std::string ed_field = "[ " + choice.edition_name + " ]";
+        std::string ed_hint = (cur_row == 0) ? (AnsiTerminal::color_teal() + " (Press Enter to change)" + AnsiTerminal::color_reset()) : "";
+        term_.print_at(row + 5, col + 4, row_active(0) + AnsiTerminal::color_bold() + "[1] Windows Edition : " + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + ed_field + AnsiTerminal::color_reset() + ed_hint + "         ");
 
-        term_.print_at(row + 9, col + 4, row_marker(1, "[2] ESD Source:"));
+        // Row 1: Target Language
+        std::string lang_field = "[ " + languages[lang_idx].second + " ]";
+        std::string lang_hint = (cur_row == 1) ? (AnsiTerminal::color_teal() + " (Press Enter to change)" + AnsiTerminal::color_reset()) : "";
+        term_.print_at(row + 7, col + 4, row_active(1) + AnsiTerminal::color_bold() + "[2] Target Language : " + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + lang_field + AnsiTerminal::color_reset() + lang_hint + "         ");
+
+        // Row 2: Install Source (renamed from ESD Source)
+        term_.print_at(row + 9, col + 4, row_active(2) + AnsiTerminal::color_bold() + "[3] Install Source   : " + AnsiTerminal::color_reset() + (cur_row == 2 ? AnsiTerminal::color_teal() + "(Press Space to toggle)" + AnsiTerminal::color_reset() : "                       "));
         if (cached_esd_found) {
-            std::string esd_check = choice.reuse_existing_esd ? "[X] Reuse cached ESD on P5 (Fastest, skip download)" : "[ ] Fresh download from Microsoft CDN      ";
-            term_.print_at(row + 10, col + 6, AnsiTerminal::color_green() + esd_check + AnsiTerminal::color_reset());
+            std::string esd_check = choice.reuse_existing_esd ? "[X] Local Cache on P5 (Fastest, skip download)" : "[ ] Fresh Download from Microsoft CDN        ";
+            term_.print_at(row + 10, col + 8, AnsiTerminal::color_green() + esd_check + AnsiTerminal::color_reset());
         } else {
-            term_.print_at(row + 10, col + 6, AnsiTerminal::color_slate() + "[!] No local cache found (Will download from official CDN)" + AnsiTerminal::color_reset());
+            term_.print_at(row + 10, col + 8, AnsiTerminal::color_slate() + "[!] Fresh Download from Microsoft CDN (No local cache)" + AnsiTerminal::color_reset());
         }
 
-        term_.print_at(row + 12, col + 4, row_marker(2, "[3] Target Language:"));
-        std::string lang_label = "<< " + languages[lang_idx].second + " >> (Space / Left / Right)";
-        term_.print_at(row + 13, col + 6, (cur_row == 2 ? (AnsiTerminal::bg_teal() + AnsiTerminal::color_bold()) : AnsiTerminal::color_gold()) + " " + lang_label + " " + AnsiTerminal::color_reset() + "          ");
-
-        term_.print_at(row + 16, col + 4, AnsiTerminal::bg_teal() + " [ Start (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(row + 16, col + 24, " [ Up/Down: Move ] ");
-        term_.print_at(row + 16, col + 44, " [ Back (B) ] ");
-        term_.print_at(row + 16, col + 59, " [ Exit (Esc) ] ");
+        // Action Buttons at bottom
+        if (cur_row == 3) {
+            term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+        } else {
+            term_.print_at(row + 14, col + 4, AnsiTerminal::color_bold() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+        }
+        term_.print_at(row + 14, col + 38, " [ Back (B) ] ");
+        term_.print_at(row + 14, col + 54, " [ Exit (Esc) ] ");
 
         auto ev = term_.read_key(-1);
         if (ev.key == Key::Up) {
-            cur_row = (cur_row + 2) % 3;
-            if (cur_row == 1 && !cached_esd_found) cur_row = 0;
+            cur_row = (cur_row + 3) % 4;
+            if (cur_row == 2 && !cached_esd_found) cur_row = 1;
         } else if (ev.key == Key::Down || ev.key == Key::Tab) {
-            cur_row = (cur_row + 1) % 3;
-            if (cur_row == 1 && !cached_esd_found) cur_row = 2;
-        } else if (ev.key == Key::Space || ev.key == Key::Left || ev.key == Key::Right) {
+            cur_row = (cur_row + 1) % 4;
+            if (cur_row == 2 && !cached_esd_found) cur_row = 3;
+        } else if (ev.key == Key::Enter) {
             if (cur_row == 0) {
-                choice.edition_index = (choice.edition_index == 6) ? 4 : 6;
-                choice.edition_name = (choice.edition_index == 6) ? "Windows 11 Pro" : "Windows 11 Home";
-            } else if (cur_row == 1 && cached_esd_found) {
-                choice.reuse_existing_esd = !choice.reuse_existing_esd;
-            } else if (cur_row == 2) {
-                int n = static_cast<int>(languages.size());
-                if (ev.key == Key::Left) {
-                    lang_idx = (lang_idx + n - 1) % n;
-                } else {
-                    lang_idx = (lang_idx + 1) % n;
-                }
-                choice.language = languages[lang_idx].first;
+                show_edition_modal(choice);
+            } else if (cur_row == 1) {
+                show_language_modal(choice, lang_idx, languages);
                 if (lang_idx != 0 && cached_esd_found) {
                     choice.reuse_existing_esd = false;
                 }
+            } else if (cur_row == 2 && cached_esd_found) {
+                choice.reuse_existing_esd = !choice.reuse_existing_esd;
+            } else if (cur_row == 3) {
+                return {ScreenAction::Next, choice};
             }
-        } else if (ev.key == Key::Enter) {
-            return {ScreenAction::Next, choice};
+        } else if (ev.key == Key::Space) {
+            if (cur_row == 0) {
+                show_edition_modal(choice);
+            } else if (cur_row == 1) {
+                show_language_modal(choice, lang_idx, languages);
+            } else if (cur_row == 2 && cached_esd_found) {
+                choice.reuse_existing_esd = !choice.reuse_existing_esd;
+            }
         } else if (ev.key == Key::Back) {
             return {ScreenAction::Back, choice};
         } else if (ev.key == Key::Escape) {

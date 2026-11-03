@@ -40,6 +40,12 @@ public:
     // Modal: Full EULA & Terms of Use Popup
     void show_eula_modal();
 
+    // Modal: Windows Edition Dropdown Selection Popup
+    void show_edition_modal(TuiEditionChoice& choice);
+
+    // Modal: Language Dropdown Selection Popup
+    void show_language_modal(TuiEditionChoice& choice, int& lang_idx, const std::vector<std::pair<std::string, std::string>>& languages);
+
     // Screen 1: EULA & Disclaimer (Standalone legacy / direct prompt)
     ScreenAction prompt_eula();
 
