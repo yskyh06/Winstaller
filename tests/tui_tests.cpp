@@ -38,8 +38,8 @@ void test_user_data_defaults() {
     assert(!data.finalized);
 
     litewin::TuiEditionChoice choice;
-    assert(choice.edition_index == 6);
-    assert(choice.edition_name == "Windows 11 Pro");
+    assert(choice.edition_index == 4);
+    assert(choice.edition_name == "Windows 11 Home");
     assert(choice.language == "ko-KR");
     assert(!choice.reuse_existing_esd);
 

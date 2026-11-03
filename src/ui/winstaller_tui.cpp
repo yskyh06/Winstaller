@@ -160,6 +160,33 @@ ScreenAction WinstallerTui::prompt_wifi() {
     }
 }
 
+void WinstallerTui::show_eula_modal() {
+    term_.update_size();
+    int m_w = 72;
+    int m_h = 16;
+    int m_col = std::max(2, (term_.cols() - m_w) / 2);
+    int m_row = std::max(4, (term_.rows() - m_h) / 2);
+
+    term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
+    term_.draw_box(m_row, m_col, m_w, m_h, "Winstaller - Terms of Use & Liability Waiver", true);
+    term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_gold() + AnsiTerminal::color_bold() + "[ Terms of Use & Liability Disclaimer ]" + AnsiTerminal::color_reset());
+    term_.print_at(m_row + 4, m_col + 4, "1. Winstaller is an automated deployment utility provided 'AS-IS'.");
+    term_.print_at(m_row + 5, m_col + 4, "2. ALL DATA on the selected target drive will be PERMANENTLY ERASED.");
+    term_.print_at(m_row + 6, m_col + 4, "3. The authors assume NO LIABILITY for data loss, hardware damage, or");
+    term_.print_at(m_row + 7, m_col + 4, "   licensing issues resulting from the use of this software.");
+    term_.print_at(m_row + 8, m_col + 4, "4. Users are solely responsible for selecting drives and keeping backups.");
+    term_.print_at(m_row + 10, m_col + 4, AnsiTerminal::color_slate() + "By continuing installation, you agree to all these terms." + AnsiTerminal::color_reset());
+
+    term_.print_at(m_row + 13, m_col + 20, AnsiTerminal::bg_teal() + " [ Close / Return (Enter / Esc) ] " + AnsiTerminal::color_reset());
+
+    while (true) {
+        auto ev = term_.read_key(-1);
+        if (ev.key == Key::Enter || ev.key == Key::Escape || (ev.key == Key::Char && (ev.ch == 'e' || ev.ch == 'E'))) {
+            break;
+        }
+    }
+}
+
 std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const std::vector<DiskInfo>& disks) {
     term_.update_size();
     draw_header("Target Disk Selection");
@@ -189,12 +216,12 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
     }
 
     term_.draw_box(row, col, w, h, "Target Storage Disk Selection", true);
-    term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + "Select the target drive for Windows 11 installation:" + AnsiTerminal::color_reset());
-    term_.print_at(row + 3, col + 4, AnsiTerminal::color_red() + "WARNING: All partitions and files on this drive will be wiped!" + AnsiTerminal::color_reset());
+    term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + "Select target drive for Windows 11 installation:" + AnsiTerminal::color_reset());
+    term_.print_at(row + 3, col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "⚠️  WARNING: All existing data on this drive will be WIPED!" + AnsiTerminal::color_reset());
 
     int selected_idx = 0;
     while (true) {
-        for (std::size_t i = 0; i < disks.size() && i < 5; ++i) {
+        for (std::size_t i = 0; i < disks.size() && i < 4; ++i) {
             int d_row = row + 5 + static_cast<int>(i) * 2;
             const auto& d = disks[i];
             std::string gb = std::to_string(d.size_bytes / (1024ULL * 1024 * 1024)) + " GB";
@@ -210,15 +237,20 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
             }
         }
 
-        term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Select (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(row + 15, col + 26, " [ Back (B) ] ");
-        term_.print_at(row + 15, col + 42, " [ Exit & Reboot (Esc) ] ");
+        term_.print_at(row + 13, col + 4, AnsiTerminal::color_slate() + "※ Continuing (Enter) constitutes agreement to Terms & Liability Waiver." + AnsiTerminal::color_reset());
+
+        term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Agree & Select (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(row + 15, col + 34, " [ View EULA (E) ] ");
+        term_.print_at(row + 15, col + 54, " [ Exit (Esc) ] ");
 
         auto ev = term_.read_key(-1);
         if (ev.key == Key::Up) {
             if (selected_idx > 0) --selected_idx;
         } else if (ev.key == Key::Down) {
             if (selected_idx + 1 < static_cast<int>(disks.size())) ++selected_idx;
+        } else if (ev.key == Key::Char && (ev.ch == 'e' || ev.ch == 'E')) {
+            show_eula_modal();
+            return prompt_disk_selection(disks);
         } else if (ev.key == Key::Back) {
             return {ScreenAction::Back, ""};
         } else if (ev.key == Key::Escape) {
@@ -228,41 +260,8 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
         }
     }
 
-    // Safety Confirmation Modal
     std::string chosen_disk = disks[selected_idx].path;
-    int m_w = 64;
-    int m_h = 10;
-    int m_col = std::max(2, (term_.cols() - m_w) / 2);
-    int m_row = std::max(6, (term_.rows() - m_h) / 2);
-
-    term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
-    term_.draw_box(m_row, m_col, m_w, m_h, "CONFIRM DISK FORMATTING", true);
-    term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "Are you sure you want to format this drive?" + AnsiTerminal::color_reset());
-    term_.print_at(m_row + 3, m_col + 4, "Target Drive: " + AnsiTerminal::color_bold() + AnsiTerminal::color_gold() + chosen_disk + AnsiTerminal::color_reset());
-    term_.print_at(m_row + 4, m_col + 4, "All existing data will be permanently destroyed!");
-
-    int confirm_sel = 1; // Default to Cancel for safety
-    while (true) {
-        if (confirm_sel == 0) {
-            term_.print_at(m_row + 7, m_col + 6, AnsiTerminal::bg_red() + AnsiTerminal::color_bold() + " [ YES, FORMAT & INSTALL ] " + AnsiTerminal::color_reset());
-            term_.print_at(m_row + 7, m_col + 38, " [ CANCEL ] ");
-        } else {
-            term_.print_at(m_row + 7, m_col + 6, " [ YES, FORMAT & INSTALL ] ");
-            term_.print_at(m_row + 7, m_col + 38, AnsiTerminal::bg_teal() + " [ CANCEL ] " + AnsiTerminal::color_reset());
-        }
-
-        auto ev = term_.read_key(-1);
-        if (ev.key == Key::Left || ev.key == Key::Right || ev.key == Key::Tab) {
-            confirm_sel = 1 - confirm_sel;
-        } else if (ev.key == Key::Enter) {
-            if (confirm_sel == 0) return {ScreenAction::Next, chosen_disk};
-            return prompt_disk_selection(disks);
-        } else if (ev.key == Key::Back) {
-            return prompt_disk_selection(disks);
-        } else if (ev.key == Key::Escape) {
-            return {ScreenAction::Exit, ""};
-        }
-    }
+    return {ScreenAction::Next, chosen_disk};
 }
 
 std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selection(const std::string& detected_oem_edition, bool cached_esd_found) {
@@ -277,12 +276,18 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
     term_.draw_box(row, col, w, h, "Windows Edition & Options", true);
 
     term_.print_at(row + 2, col + 4, "System Architecture: " + AnsiTerminal::color_bold() + "x86_64 (64-bit UEFI)" + AnsiTerminal::color_reset());
-    std::string oem_str = detected_oem_edition.empty() ? "None (Default to Pro)" : (detected_oem_edition + " (Detected)");
+    std::string oem_str = detected_oem_edition.empty() ? "None (Default to Home)" : (detected_oem_edition + " (Detected)");
     term_.print_at(row + 3, col + 4, "ACPI OEM License   : " + AnsiTerminal::color_green() + oem_str + AnsiTerminal::color_reset());
 
     TuiEditionChoice choice;
-    choice.edition_index = 6;
-    choice.edition_name = "Windows 11 Pro";
+    // Default to Home (Index 4) for consumer OEM standard, upgrade to Pro only if detected
+    if (!detected_oem_edition.empty() && detected_oem_edition.find("Pro") != std::string::npos) {
+        choice.edition_index = 6;
+        choice.edition_name = "Windows 11 Pro";
+    } else {
+        choice.edition_index = 4;
+        choice.edition_name = "Windows 11 Home";
+    }
     choice.language = "ko-KR";
     choice.reuse_existing_esd = cached_esd_found;
 

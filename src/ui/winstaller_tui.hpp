@@ -27,8 +27,8 @@ struct TuiUserData {
 };
 
 struct TuiEditionChoice {
-    int edition_index = 6; // Default Index 6: Pro
-    std::string edition_name = "Windows 11 Pro";
+    int edition_index = 4; // Default Index 4: Home (OEM Consumer standard)
+    std::string edition_name = "Windows 11 Home";
     std::string language = "ko-KR";
     bool reuse_existing_esd = false;
 };
@@ -37,7 +37,10 @@ class WinstallerTui {
 public:
     explicit WinstallerTui(AnsiTerminal& term);
 
-    // Screen 1: EULA & Disclaimer
+    // Modal: Full EULA & Terms of Use Popup
+    void show_eula_modal();
+
+    // Screen 1: EULA & Disclaimer (Standalone legacy / direct prompt)
     ScreenAction prompt_eula();
 
     // Screen 2: Wi-Fi Setup

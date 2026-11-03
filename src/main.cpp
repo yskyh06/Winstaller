@@ -3,6 +3,7 @@
 #include "core/esd_catalog.hpp"
 #include "platform/disk_inspector.hpp"
 #include "platform/install_pipeline.hpp"
+#include "platform/network_inspector.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/process_runner.hpp"
 #include "ui/ansi_terminal.hpp"
@@ -158,20 +159,30 @@ int main(int argc, char* argv[]) {
     TuiUserData user_data;
     int active_tui_field = 0;
 
-    // Interactive TUI Flow (Screens 1 to 4) when run in terminal
+    // Interactive TUI Flow (Streamlined 2-Screen Setup) when run in terminal
     if (!non_interactive && isatty(STDIN_FILENO)) {
         AnsiTerminal term;
         WinstallerTui tui(term);
 
+        // Pre-check network: if online via Ethernet or Wi-Fi, bypass Wi-Fi setup screen
+        bool initial_online = false;
+        auto inv_res = inspect_network_interfaces();
+        if (const auto* inv = std::get_if<NetworkInventory>(&inv_res)) {
+            initial_online = has_active_ethernet(*inv);
+        }
+        if (!initial_online) {
+            auto probe = probe_internet(default_internet_probe_targets(), true);
+            initial_online = probe.is_online;
+        }
+
         enum class SetupStep {
-            Eula = 0,
-            Wifi = 1,
-            Disk = 2,
-            Edition = 3,
-            Done = 4
+            Wifi = 0,
+            Disk = 1,
+            Edition = 2,
+            Done = 3
         };
 
-        SetupStep current_step = SetupStep::Eula;
+        SetupStep current_step = initial_online ? SetupStep::Disk : SetupStep::Wifi;
         std::vector<DiskInfo> eligible_disks;
         std::string chosen_disk;
 
@@ -186,20 +197,12 @@ int main(int argc, char* argv[]) {
 
         while (current_step != SetupStep::Done) {
             switch (current_step) {
-            case SetupStep::Eula: {
-                auto act = tui.prompt_eula();
-                if (act == ScreenAction::Exit) {
-                    reboot_and_exit();
-                }
-                current_step = SetupStep::Wifi;
-                break;
-            }
             case SetupStep::Wifi: {
                 auto act = tui.prompt_wifi();
                 if (act == ScreenAction::Exit) {
                     reboot_and_exit();
                 } else if (act == ScreenAction::Back) {
-                    current_step = SetupStep::Eula;
+                    reboot_and_exit();
                 } else {
                     current_step = SetupStep::Disk;
                 }
@@ -251,7 +254,7 @@ int main(int argc, char* argv[]) {
             case SetupStep::Edition: {
                 std::string oem_str;
                 if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
-                    oem_str = "Windows 11 Pro";
+                    oem_str = "Windows 11 Home";
                 }
                 std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
                 auto [act, choice] = tui.prompt_edition_selection(oem_str, cached_mb > 0);
