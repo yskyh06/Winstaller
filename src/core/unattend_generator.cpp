@@ -23,7 +23,8 @@ static std::string escape_xml(const std::string& input) {
 
 static std::string generate_random_computer_name() {
     static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    std::mt19937 rng(1337); // Seed
+    std::random_device rd;
+    std::mt19937 rng(rd());
     std::string name = "DESKTOP-";
     for (int i = 0; i < 7; ++i) {
         name += charset[rng() % (sizeof(charset) - 1)];
@@ -81,10 +82,15 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
         add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassRAMCheck\" /t REG_DWORD /d 1 /f", "Bypass RAM Check");
         add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassStorageCheck\" /t REG_DWORD /d 1 /f", "Bypass Storage Check");
         add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassCPUCheck\" /t REG_DWORD /d 1 /f", "Bypass CPU Check");
+        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\MoSetup\" /v \"AllowUpgradesWithUnsupportedTPMOrCPU\" /t REG_DWORD /d 1 /f", "Allow upgrades on unsupported CPU/TPM");
     }
 
     if (options.bypass_nro) {
         add_sync_cmd("reg.exe add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE\" /v \"BypassNRO\" /t REG_DWORD /d 1 /f", "Bypass NRO requirement");
+    }
+
+    if (options.disable_oobe_update) {
+        add_sync_cmd("reg.exe add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE\" /v \"DisableZAU\" /t REG_DWORD /d 1 /f", "Disable OOBE Zero Day Auto Update");
     }
 
     if (options.prevent_bitlocker) {
@@ -164,6 +170,11 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
         oss << "        </SynchronousCommand>\n";
     };
 
+    if (options.bypass_tpm_secureboot) {
+        add_logon_cmd("reg.exe add \"HKCU\\Control Panel\\UnsupportedHardwareNotificationCache\" /v \"SV1\" /t REG_DWORD /d 0 /f", "Hide unsupported hardware watermark SV1");
+        add_logon_cmd("reg.exe add \"HKCU\\Control Panel\\UnsupportedHardwareNotificationCache\" /v \"SV2\" /t REG_DWORD /d 0 /f", "Hide unsupported hardware watermark SV2");
+    }
+
     if (options.show_file_extensions) {
         add_logon_cmd("reg.exe add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v \"HideFileExt\" /t REG_DWORD /d 0 /f", "Show file extensions");
     }
@@ -176,6 +187,8 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
         add_logon_cmd("cmd.exe /c \"diskpart.exe /s C:\\Windows\\Panther\\extend_c.txt > C:\\Windows\\Panther\\extend.log 2>&1\"", "Delete Temp Partition and Extend C Drive");
         add_logon_cmd("cmd.exe /c \"mountvol S: /s & if exist S:\\EFI\\Litewin\\boot_stage.flag del /f /q S:\\EFI\\Litewin\\boot_stage.flag & if exist S:\\sources\\boot.wim del /f /q S:\\sources\\boot.wim & mountvol S: /d\"", "Clean Litewin Boot Flag and WinPE from ESP");
     }
+
+    add_logon_cmd("cmd.exe /c \"if exist C:\\Windows\\Panther\\unattend.xml del /f /q C:\\Windows\\Panther\\unattend.xml\"", "Remove unattend.xml containing user credentials");
 
     oss << "      </FirstLogonCommands>\n";
     oss << "    </component>\n";

@@ -20,6 +20,7 @@ struct UnattendOptions {
     bool bypass_nro = true;            // Skip Microsoft Online Account
     bool bypass_tpm_secureboot = true; // Bypass TPM/SecureBoot checks
     bool prevent_bitlocker = true;     // Prevent automatic BitLocker encryption
+    bool disable_oobe_update = true;   // Skip Windows Update check in OOBE (DisableZAU)
 
     // Explorer & Usability tweaks
     bool show_file_extensions = true;  // HideFileExt = 0

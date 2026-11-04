@@ -1,8 +1,22 @@
 #include "core/esd_catalog.hpp"
 
 #include <algorithm>
+#include <cctype>
 
 namespace litewin {
+
+namespace {
+bool iequals(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
 
 std::string_view to_string(WindowsVersion ver) {
     switch (ver) {
@@ -118,8 +132,8 @@ std::optional<EsdTarget> find_esd_target(
 ) {
     for (const auto& target : g_known_targets) {
         if (target.version == version &&
-            target.language_code == language_code &&
-            target.architecture == architecture) {
+            iequals(target.language_code, language_code) &&
+            iequals(target.architecture, architecture)) {
             return target;
         }
     }

@@ -1,8 +1,10 @@
 #include "platform/install_pipeline.hpp"
+#include "core/hash_verifier.hpp"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
 
 namespace litewin {
 
@@ -59,8 +61,30 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
     candidate.mountpoints = std::vector<std::string>{};
     candidate.has_signatures = false;
 
+    if (!options.dry_run) {
+        std::error_code sys_ec;
+        fs::path sys_block = fs::path("/sys/block") / candidate.name;
+        if (fs::is_symlink(sys_block, sys_ec)) {
+            std::string link_target = fs::read_symlink(sys_block, sys_ec).string();
+            if (link_target.find("/usb") != std::string::npos) {
+                candidate.transport = "usb";
+            }
+        }
+        std::ifstream mounts_in("/proc/mounts");
+        std::string m_dev, m_pt, m_rest;
+        while (mounts_in >> m_dev >> m_pt) {
+            std::getline(mounts_in, m_rest);
+            if (m_dev.rfind(options.target_disk_path, 0) == 0 && m_pt.rfind(options.mount_root, 0) != 0) {
+                candidate.mountpoints->push_back(m_pt);
+            }
+        }
+    }
+
     auto target_eval = evaluate_disk_target(candidate);
-    if (!target_eval.is_eligible && !options.dry_run) {
+    bool allowed_target = target_eval.is_eligible ||
+                          target_eval.rejection_reason == DiskRejectionReason::has_partitions ||
+                          target_eval.rejection_reason == DiskRejectionReason::existing_signatures;
+    if (!allowed_target && !options.dry_run) {
         result.failed_step = PipelineStep::PreCheck;
         result.error_message = "Target disk ineligible: " + target_eval.message;
         return result;
@@ -69,6 +93,12 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
     if (options.custom_esd_path.empty() && options.esd_target.download_url.empty()) {
         result.failed_step = PipelineStep::PreCheck;
         result.error_message = "No download URL or custom ESD path provided";
+        return result;
+    }
+
+    if (options.custom_esd_path.empty() && options.esd_target.sha256_hash.empty() && !options.dry_run) {
+        result.failed_step = PipelineStep::PreCheck;
+        result.error_message = "Selected ESD target lacks a verified SHA-256 checksum";
         return result;
     }
 
@@ -183,7 +213,14 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
         log_progress(options, result, PipelineStep::AcquireImage, 50, "Using custom/cached ESD: " + esd_file);
     } else if (options.reuse_existing_esd && fs::exists(esd_file, ec) && fs::file_size(esd_file, ec) > 100ULL * 1024 * 1024) {
         auto mb = fs::file_size(esd_file, ec) / (1024 * 1024);
-        log_progress(options, result, PipelineStep::AcquireImage, 52, "Reusing existing ESD on P5 (" + std::to_string(mb) + " MB): " + esd_file);
+        log_progress(options, result, PipelineStep::AcquireImage, 50, "Verifying cached ESD on P5 (" + std::to_string(mb) + " MB): " + esd_file);
+        if (!options.dry_run && !options.esd_target.sha256_hash.empty() &&
+            !verify_file_sha256(esd_file, options.esd_target.sha256_hash)) {
+            result.failed_step = PipelineStep::AcquireImage;
+            result.error_message = "Cached ESD on P5 failed SHA-256 verification. Please disable cache reuse and retry.";
+            return result;
+        }
+        log_progress(options, result, PipelineStep::AcquireImage, 52, "Reusing verified ESD on P5 (" + std::to_string(mb) + " MB): " + esd_file);
     } else if (options.dry_run) {
         log_progress(options, result, PipelineStep::AcquireImage, 50, "Simulated download from " + options.esd_target.download_url);
     } else {
@@ -246,19 +283,32 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
         auto images = WimDeployer::get_image_info(esd_file);
         if (images.size() >= 4) {
             int matched_idx = -1;
+            // Pass 1: exact name match (e.g. "Windows 11 Home" or "Windows 11 Pro")
             for (const auto& img : images) {
-                if (img.index < 4) continue; // Skip Setup Media (1) & WinPE (2, 3)
-                if (!options.edition_preference.empty() &&
-                    img.name.find(options.edition_preference) != std::string::npos) {
+                if (img.index < 4) continue;
+                if (!options.edition_preference.empty() && img.name == options.edition_preference) {
                     matched_idx = img.index;
                     resolved_name = img.name;
                     break;
                 }
             }
+            // Pass 2: substring match excluding " N" variants
             if (matched_idx == -1) {
-                // Fallback to last OS image (typically Windows 11 Pro at Index 6) or Index 4 (Home)
-                matched_idx = images.back().index;
-                resolved_name = images.back().name;
+                for (const auto& img : images) {
+                    if (img.index < 4) continue;
+                    if (!options.edition_preference.empty() &&
+                        img.name.find(options.edition_preference) != std::string::npos &&
+                        img.name.find(" N") == std::string::npos) {
+                        matched_idx = img.index;
+                        resolved_name = img.name;
+                        break;
+                    }
+                }
+            }
+            if (matched_idx == -1) {
+                // Safe fallback to Index 4 (Windows 11 Home)
+                matched_idx = images[3].index;
+                resolved_name = images[3].name;
             }
             resolved_index = matched_idx;
         } else if (!images.empty()) {
@@ -276,7 +326,12 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
 
         // Apply directly to the unmounted NTFS block device (p4_path) via libntfs-3g
         // so that Windows NT Security Descriptors (ACLs), 8.3 short names, and reparse points are 100% preserved.
-        static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), false));
+        auto unmnt_p4 = DiskPartitioner::unmount_partition(p4_dir.string(), false);
+        if (!unmnt_p4.success && fs::exists(p4_path, ec)) {
+            result.failed_step = PipelineStep::DeployWindows;
+            result.error_message = "Failed to unmount P4 prior to block deployment: " + unmnt_p4.error_message;
+            return result;
+        }
 
         WimDeployOptions wim_opt;
         wim_opt.image_path = esd_file;
@@ -338,21 +393,27 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
     std::string unattend_xml = UnattendGenerator::generate_xml(options.unattend_options);
     std::string extend_script = UnattendGenerator::generate_extend_script();
 
-    std::ofstream unattend_file(panther_dir / "unattend.xml");
-    if (!unattend_file) {
-        result.failed_step = PipelineStep::InjectConfiguration;
-        result.error_message = "Failed to write unattend.xml to Panther directory";
-        return result;
+    {
+        std::ofstream unattend_file(panther_dir / "unattend.xml");
+        unattend_file << unattend_xml;
+        unattend_file.flush();
+        if (!unattend_file.good()) {
+            result.failed_step = PipelineStep::InjectConfiguration;
+            result.error_message = "Failed to write unattend.xml to Panther directory";
+            return result;
+        }
     }
-    unattend_file << unattend_xml;
 
-    std::ofstream extend_file(panther_dir / "extend_c.txt");
-    if (!extend_file) {
-        result.failed_step = PipelineStep::InjectConfiguration;
-        result.error_message = "Failed to write extend_c.txt to Panther directory";
-        return result;
+    {
+        std::ofstream extend_file(panther_dir / "extend_c.txt");
+        extend_file << extend_script;
+        extend_file.flush();
+        if (!extend_file.good()) {
+            result.failed_step = PipelineStep::InjectConfiguration;
+            result.error_message = "Failed to write extend_c.txt to Panther directory";
+            return result;
+        }
     }
-    extend_file << extend_script;
 
     result.last_completed_step = PipelineStep::InjectConfiguration;
     log_progress(options, result, PipelineStep::InjectConfiguration, 82, "Unattended configuration injected");
@@ -386,6 +447,9 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
     // Step 8: UnmountVolumes
     // -------------------------------------------------------------
     log_progress(options, result, PipelineStep::UnmountVolumes, 95, "Safely unmounting target volumes...");
+    if (!options.dry_run) {
+        ::sync();
+    }
     static_cast<void>(DiskPartitioner::unmount_partition(p2_dir.string(), options.dry_run));
     static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), options.dry_run));
     static_cast<void>(DiskPartitioner::unmount_partition(p5_dir.string(), options.dry_run));

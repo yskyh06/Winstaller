@@ -10,6 +10,7 @@ enum class Key {
     None,
     Enter,
     Escape,
+    Back,
     Tab,
     Backspace,
     Up,
@@ -40,7 +41,7 @@ public:
     // Coordinates & drawing
     void set_cursor(int row, int col);
     void print_at(int row, int col, const std::string& text);
-    void draw_box(int row, int col, int width, int height, const std::string& title = "");
+    void draw_box(int row, int col, int width, int height, const std::string& title = "", bool rounded = true);
     void fill_rect(int row, int col, int width, int height, char ch = ' ');
 
     // Color helpers
@@ -51,8 +52,14 @@ public:
     static std::string color_yellow();
     static std::string color_red();
     static std::string color_gray();
+    static std::string color_teal();
+    static std::string color_lavender();
+    static std::string color_gold();
+    static std::string color_slate();
     static std::string bg_blue();
     static std::string bg_red();
+    static std::string bg_surface();
+    static std::string bg_teal();
 
     // Input handling (timeout_ms: -1 = blocking, 0 = non-blocking, >0 = timeout)
     KeyEvent read_key(int timeout_ms = -1);

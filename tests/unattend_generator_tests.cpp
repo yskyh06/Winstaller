@@ -28,7 +28,10 @@ void test_default_unattend_xml() {
 
     // Bypasses & security
     assert(xml.find("BypassTPMCheck") != std::string::npos);
+    assert(xml.find("AllowUpgradesWithUnsupportedTPMOrCPU") != std::string::npos);
+    assert(xml.find("UnsupportedHardwareNotificationCache") != std::string::npos);
     assert(xml.find("BypassNRO") != std::string::npos);
+    assert(xml.find("DisableZAU") != std::string::npos);
     assert(xml.find("PreventDeviceEncryption") != std::string::npos); // BitLocker
     assert(xml.find("HideFileExt") != std::string::npos);             // File extensions
     assert(xml.find("HideFirstRunExperience") != std::string::npos);  // Edge

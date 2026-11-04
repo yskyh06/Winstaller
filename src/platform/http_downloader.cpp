@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <curl/curl.h>
 #include <filesystem>
 #include <memory>
+#include <openssl/evp.h>
 #include <string_view>
+#include <thread>
 #include <unistd.h>
 
 namespace litewin {
@@ -50,7 +53,9 @@ struct DownloadContext {
     const DownloadOptions* options = nullptr;
     DownloadResult* result = nullptr;
     std::FILE* file = nullptr;
+    EVP_MD_CTX* md_ctx = nullptr;
     std::string part_filepath;
+    std::uint64_t resume_offset = 0;
     bool response_headers_parsed = false;
     bool is_html_detected = false;
     bool range_reset_needed = false;
@@ -61,6 +66,15 @@ std::size_t header_callback(char* buffer, std::size_t size, std::size_t nitems, 
     const std::size_t total = size * nitems;
     auto* ctx = static_cast<DownloadContext*>(userdata);
     std::string_view line(buffer, total);
+
+    // Reset per-hop state on new HTTP status line (e.g. after 301/302 redirect)
+    if (line.rfind("HTTP/", 0) == 0) {
+        ctx->is_html_detected = false;
+        if (ctx->resume_offset > 0 &&
+            (line.find(" 200 ") != std::string_view::npos || line.find(" 200\r") != std::string_view::npos)) {
+            ctx->range_reset_needed = true;
+        }
+    }
 
     // Parse ETag
     constexpr std::string_view kEtagPrefix = "ETag:";
@@ -106,6 +120,17 @@ std::size_t write_callback(char* ptr, std::size_t size, std::size_t nmemb, void*
         return 0;
     }
 
+    if (ctx->range_reset_needed) {
+        ctx->range_reset_needed = false;
+        if (ctx->file) {
+            ctx->file = std::freopen(ctx->part_filepath.c_str(), "wb", ctx->file);
+            ctx->result->bytes_downloaded = 0;
+        }
+        if (ctx->md_ctx) {
+            EVP_DigestInit_ex(ctx->md_ctx, EVP_sha256(), nullptr);
+        }
+    }
+
     if (!ctx->file) {
         return 0;
     }
@@ -116,6 +141,10 @@ std::size_t write_callback(char* ptr, std::size_t size, std::size_t nmemb, void*
         ctx->result->error_kind = DownloadErrorKind::insufficient_disk_space;
         ctx->result->error_message = "Disk write failed or space exhausted (ENOSPC)";
         return 0;
+    }
+
+    if (ctx->md_ctx && written > 0) {
+        EVP_DigestUpdate(ctx->md_ctx, ptr, written * size);
     }
 
     ctx->result->bytes_downloaded += (written * size);
@@ -162,80 +191,122 @@ DownloadResult HttpDownloader::download(const DownloadOptions& options) {
         }
     }
 
-    // 2. Check existing .part file size for Range resume
-    std::uint64_t existing_bytes = 0;
-    if (std::filesystem::exists(part_path, ec)) {
-        existing_bytes = std::filesystem::file_size(part_path, ec);
-        if (ec) {
-            existing_bytes = 0;
+    // 2. Perform transfer with up to 3 attempts (exponential backoff + Range resume)
+    CURLcode res = CURLE_OK;
+    bool html_detected = false;
+    std::string streamed_sha256;
+    constexpr int kMaxAttempts = 3;
+
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(std::chrono::seconds(1 << (attempt - 1)));
         }
-    }
 
-    ScopedCurl curl;
-    if (!curl.get()) {
-        result.success = false;
-        result.error_kind = DownloadErrorKind::network_failure;
-        result.error_message = "Failed to initialize libcurl.";
-        return result;
-    }
-
-    // Open file in append or create mode
-    const char* open_mode = (existing_bytes > 0) ? "ab" : "wb";
-    std::FILE* raw_file = std::fopen(part_path.c_str(), open_mode);
-    if (!raw_file) {
-        result.success = false;
-        result.error_kind = DownloadErrorKind::insufficient_disk_space;
-        result.error_message = "Failed to open temporary .part file for writing.";
-        return result;
-    }
-    ScopedFile file_guard(raw_file);
-
-    DownloadContext ctx;
-    ctx.options = &options;
-    ctx.result = &result;
-    ctx.file = file_guard.get();
-    ctx.part_filepath = part_path.string();
-
-    curl_easy_setopt(curl.get(), CURLOPT_URL, options.url.c_str());
-    curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl.get(), CURLOPT_MAXREDIRS, 10L);
-    curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, static_cast<long>(options.connect_timeout_seconds));
-    curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(options.low_speed_limit_bytes));
-    curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_TIME, static_cast<long>(options.low_speed_time_seconds));
-
-    // Range resume header
-    if (existing_bytes > 0) {
-        curl_easy_setopt(curl.get(), CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(existing_bytes));
-    }
-
-    curl_easy_setopt(curl.get(), CURLOPT_HEADERFUNCTION, header_callback);
-    curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &ctx);
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &ctx);
-
-    if (options.progress_callback) {
-        curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
-        curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &ctx);
-        curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
-    }
-
-    CURLcode res = curl_easy_perform(curl.get());
-
-    curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &result.http_status_code);
-    ctx.http_status = result.http_status_code;
-
-    // Flush dirty pages to physical disk
-    if (file_guard.get()) {
-        std::fflush(file_guard.get());
-        int fd = fileno(file_guard.get());
-        if (fd >= 0) {
-            ::fsync(fd);
+        std::uint64_t existing_bytes = 0;
+        if (std::filesystem::exists(part_path, ec)) {
+            existing_bytes = std::filesystem::file_size(part_path, ec);
+            if (ec) {
+                existing_bytes = 0;
+            }
         }
-        file_guard.close();
+
+        ScopedCurl curl;
+        if (!curl.get()) {
+            result.success = false;
+            result.error_kind = DownloadErrorKind::network_failure;
+            result.error_message = "Failed to initialize libcurl.";
+            return result;
+        }
+
+        const char* open_mode = (existing_bytes > 0) ? "ab" : "wb";
+        std::FILE* raw_file = std::fopen(part_path.c_str(), open_mode);
+        if (!raw_file) {
+            result.success = false;
+            result.error_kind = DownloadErrorKind::insufficient_disk_space;
+            result.error_message = "Failed to open temporary .part file for writing.";
+            return result;
+        }
+        ScopedFile file_guard(raw_file);
+
+        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> md_ctx(nullptr, EVP_MD_CTX_free);
+        if (existing_bytes == 0 && !options.expected_sha256.empty()) {
+            md_ctx.reset(EVP_MD_CTX_new());
+            if (md_ctx) {
+                EVP_DigestInit_ex(md_ctx.get(), EVP_sha256(), nullptr);
+            }
+        }
+
+        DownloadContext ctx;
+        ctx.options = &options;
+        ctx.result = &result;
+        ctx.file = file_guard.get();
+        ctx.md_ctx = md_ctx.get();
+        ctx.part_filepath = part_path.string();
+        ctx.resume_offset = existing_bytes;
+
+        curl_easy_setopt(curl.get(), CURLOPT_URL, options.url.c_str());
+        curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_MAXREDIRS, 10L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+        curl_easy_setopt(curl.get(), CURLOPT_PROTOCOLS_STR, "http,https,file");
+        curl_easy_setopt(curl.get(), CURLOPT_REDIR_PROTOCOLS_STR, "http,https,file");
+        curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, static_cast<long>(options.connect_timeout_seconds));
+        curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(options.low_speed_limit_bytes));
+        curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_TIME, static_cast<long>(options.low_speed_time_seconds));
+
+        if (existing_bytes > 0) {
+            curl_easy_setopt(curl.get(), CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(existing_bytes));
+        }
+
+        curl_easy_setopt(curl.get(), CURLOPT_HEADERFUNCTION, header_callback);
+        curl_easy_setopt(curl.get(), CURLOPT_HEADERDATA, &ctx);
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &ctx);
+
+        if (options.progress_callback) {
+            curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
+            curl_easy_setopt(curl.get(), CURLOPT_XFERINFODATA, &ctx);
+            curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
+        }
+
+        res = curl_easy_perform(curl.get());
+        curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &result.http_status_code);
+        ctx.http_status = result.http_status_code;
+        html_detected = ctx.is_html_detected;
+
+        if (res == CURLE_OK && md_ctx) {
+            unsigned char digest[EVP_MAX_MD_SIZE];
+            unsigned int digest_len = 0;
+            if (EVP_DigestFinal_ex(md_ctx.get(), digest, &digest_len) == 1) {
+                static const char hex_chars[] = "0123456789abcdef";
+                streamed_sha256.clear();
+                streamed_sha256.reserve(digest_len * 2);
+                for (unsigned int i = 0; i < digest_len; ++i) {
+                    streamed_sha256.push_back(hex_chars[(digest[i] >> 4) & 0x0F]);
+                    streamed_sha256.push_back(hex_chars[digest[i] & 0x0F]);
+                }
+            }
+        }
+
+        if (file_guard.get()) {
+            std::fflush(file_guard.get());
+            int fd = fileno(file_guard.get());
+            if (fd >= 0) {
+                ::fsync(fd);
+            }
+            file_guard.close();
+        }
+
+        if (res == CURLE_OK || res == CURLE_ABORTED_BY_CALLBACK || html_detected ||
+            result.error_kind == DownloadErrorKind::insufficient_disk_space ||
+            result.http_status_code == 403 || result.http_status_code == 429) {
+            break;
+        }
     }
 
     // Handle Captive portal detection
-    if (ctx.is_html_detected) {
+    if (html_detected) {
         result.success = false;
         result.error_kind = DownloadErrorKind::invalid_content_type;
         result.error_message = "Received HTML response instead of binary ISO. Possible captive portal or web login required.";
@@ -286,14 +357,20 @@ DownloadResult HttpDownloader::download(const DownloadOptions& options) {
         return result;
     }
 
-    // 4. SHA-256 hash verification (Streaming)
+    // 4. SHA-256 hash verification (Zero-reread in-flight streaming or single-pass fallback)
     if (!options.expected_sha256.empty()) {
-        result.computed_sha256 = compute_file_sha256(part_path.string());
-        if (!verify_file_sha256(part_path.string(), options.expected_sha256)) {
+        result.computed_sha256 = !streamed_sha256.empty()
+            ? streamed_sha256
+            : compute_file_sha256(part_path.string());
+        std::string expected_lower = options.expected_sha256;
+        std::transform(expected_lower.begin(), expected_lower.end(), expected_lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (result.computed_sha256.empty() || result.computed_sha256 != expected_lower) {
             result.success = false;
             result.error_kind = DownloadErrorKind::hash_mismatch;
             result.error_message = "SHA-256 checksum mismatch! Expected: " + options.expected_sha256 +
                                    ", Got: " + result.computed_sha256;
+            std::filesystem::remove(part_path, ec);
             return result;
         }
     }

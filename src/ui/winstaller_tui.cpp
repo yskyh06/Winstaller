@@ -369,12 +369,7 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
 
     const std::vector<std::pair<std::string, std::string>> languages = {
         {"ko-KR", "Korean (ko-KR)"},
-        {"en-US", "English (en-US)"},
-        {"ja-JP", "Japanese (ja-JP)"},
-        {"zh-CN", "Chinese Simplified (zh-CN)"},
-        {"de-DE", "German (de-DE)"},
-        {"fr-FR", "French (fr-FR)"},
-        {"es-ES", "Spanish (es-ES)"}
+        {"en-US", "English (en-US)"}
     };
     int lang_idx = 0;
     int cur_row = 0; // 0 = Edition, 1 = Language, 2 = Install Source, 3 = Start Button
@@ -558,10 +553,25 @@ bool WinstallerTui::handle_user_data_input(TuiUserData& user_data, int& active_f
             changed = true;
         } else if (ev.key == Key::Char || ev.key == Key::Space || ev.key == Key::Back) {
             std::string* target = get_target_field();
-            if (target->size() < 15 && ev.ch >= 32 && ev.ch <= 126) {
-                target->push_back(ev.ch);
+            if (ev.ch >= 32 && ev.ch <= 126) {
+                const std::size_t max_len = (active_field == 0) ? 20 : ((active_field == 3) ? 15 : 64);
+                bool valid_char = true;
+                if (active_field == 0) {
+                    const std::string_view forbidden = "/\\[]:;|=,+*?<>\"";
+                    if (forbidden.find(ev.ch) != std::string_view::npos || (target->empty() && (ev.ch == ' ' || ev.ch == '.'))) {
+                        valid_char = false;
+                    }
+                } else if (active_field == 3) {
+                    bool is_alnum = (ev.ch >= 'A' && ev.ch <= 'Z') || (ev.ch >= 'a' && ev.ch <= 'z') || (ev.ch >= '0' && ev.ch <= '9');
+                    if (!is_alnum && (ev.ch != '-' || target->empty())) {
+                        valid_char = false;
+                    }
+                }
+                if (valid_char && target->size() < max_len) {
+                    target->push_back(ev.ch);
+                    changed = true;
+                }
             }
-            changed = true;
         }
     }
     return changed;

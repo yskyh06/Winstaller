@@ -37,7 +37,7 @@ static void print_usage(const char* prog) {
               << "  --dry-run               Simulate all operations without touching disk\n"
               << "  --target-disk <path>    Force target disk path (e.g. /dev/nvme0n1)\n"
               << "  --esd <path>            Use local pre-downloaded ESD image file\n"
-              << "  --edition <Home|Pro>    Select Windows edition (default: Pro)\n"
+              << "  --edition <Home|Pro>    Select Windows edition (default: Home)\n"
               << "  --non-interactive       Skip confirmation prompts\n"
               << "  -h, --help              Show this help menu\n\n";
 }
@@ -52,8 +52,9 @@ static std::uint64_t detect_cached_esd_mb(const std::string& disk_path, const st
         return 0;
     }
     fs::path probe_dir = fs::path(mount_root) / "p5";
-    auto mnt = DiskPartitioner::mount_partition(p5_path, probe_dir.string(), "ntfs", false);
-    if (!mnt.success) {
+    fs::create_directories(probe_dir, ec);
+    auto ro_proc = ProcessRunner::run("mount", {"-o", "ro,noatime", p5_path, probe_dir.string()});
+    if (!ro_proc.success()) {
         return 0;
     }
     std::uint64_t mb = 0;
@@ -135,11 +136,11 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--edition" && i + 1 < argc) {
             std::string ed = argv[++i];
             if (ed == "Home" || ed == "home") {
-                options.image_index = 1;
-                options.edition_preference = "Home";
+                options.image_index = 4;
+                options.edition_preference = "Windows 11 Home";
             } else {
-                options.image_index = 3; // Pro
-                options.edition_preference = "Pro";
+                options.image_index = 6; // Pro
+                options.edition_preference = "Windows 11 Pro";
             }
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
@@ -254,7 +255,13 @@ int main(int argc, char* argv[]) {
             case SetupStep::Edition: {
                 std::string oem_str;
                 if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
-                    oem_str = "Windows 11 Home";
+                    std::ifstream msdm_in("/sys/firmware/acpi/tables/MSDM", std::ios::binary);
+                    std::string msdm_raw((std::istreambuf_iterator<char>(msdm_in)), std::istreambuf_iterator<char>());
+                    if (msdm_raw.find("Pro") != std::string::npos || msdm_raw.find("PRO") != std::string::npos) {
+                        oem_str = "Windows 11 Pro";
+                    } else {
+                        oem_str = "Windows 11 Home";
+                    }
                 }
                 std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
                 auto [act, choice] = tui.prompt_edition_selection(oem_str, cached_mb > 0);
@@ -283,8 +290,16 @@ int main(int argc, char* argv[]) {
     } else {
         // Fallback for non-interactive / pipe mode
         if (options.target_disk_path.empty()) {
-            options.target_disk_path = "/dev/nvme0n1";
-            options.target_disk_size = 64ULL * 1024 * 1024 * 1024;
+            if (options.dry_run) {
+                options.target_disk_path = "/dev/nvme0n1";
+                options.target_disk_size = 64ULL * 1024 * 1024 * 1024;
+            } else {
+                std::cerr << ">> [ERROR] Non-interactive mode requires explicit --target-disk <path> and --non-interactive.\n";
+                return 1;
+            }
+        } else if (!non_interactive && !options.dry_run) {
+            std::cerr << ">> [ERROR] Standard input is not a TTY. Pass --non-interactive to confirm automated deployment.\n";
+            return 1;
         }
         prompt_cache_and_wipe_mode(options, non_interactive);
     }
@@ -357,7 +372,6 @@ int main(int argc, char* argv[]) {
                     {
                         std::lock_guard<std::mutex> lock(tui_mtx);
                         if (pipeline_tui->handle_user_data_input(user_data, active_tui_field)) {
-                            sync_user_data_to_options();
                             pipeline_tui->render_progress(cur_step_name, cur_step_pct, cur_overall_pct, cur_detail_msg, user_data, active_tui_field);
                         }
                     }
@@ -423,27 +437,55 @@ int main(int argc, char* argv[]) {
 
         if (pipeline_term) {
             pipeline_term->clear();
-        }
-        std::cerr << ">> [FAILED] Installation stopped at " << to_string(result.failed_step) << "!\n"
-                  << "   Error: " << result.error_message << "\n"
-                  << "===============================================================\n";
+            pipeline_term->update_size();
+            int w = 70;
+            int h = 12;
+            int col = std::max(2, (pipeline_term->cols() - w) / 2);
+            int row = std::max(4, (pipeline_term->rows() - h) / 2);
+            pipeline_term->draw_box(row, col, w, h, "INSTALLATION FAILED", true);
+            pipeline_term->print_at(row + 2, col + 4, AnsiTerminal::color_bold() + AnsiTerminal::color_red() +
+                                    "Failed at step: " + std::string(to_string(result.failed_step)) + AnsiTerminal::color_reset());
+            std::string err_line = result.error_message.substr(0, w - 8);
+            pipeline_term->print_at(row + 4, col + 4, err_line);
+            pipeline_term->print_at(row + 6, col + 4, AnsiTerminal::color_slate() + "Press Enter to Retry, or Esc to Reboot..." + AnsiTerminal::color_reset());
+            pipeline_term->print_at(row + 9, col + 12, AnsiTerminal::bg_teal() + " [ Retry (Enter) ] " + AnsiTerminal::color_reset());
+            pipeline_term->print_at(row + 9, col + 38, " [ Reboot (Esc) ] ");
 
-        if (non_interactive || options.dry_run) {
-            return 1;
-        }
-
-        std::cout << "\n   How would you like to proceed?\n"
-                  << "   [1] Retry installation\n"
-                  << "   [2] Abort and reboot system\n"
-                  << "   Select option [1-2]: ";
-        int retry_choice = 2;
-        if (!(std::cin >> retry_choice) || retry_choice != 1) {
-            std::cin.clear();
-            std::cout << "   Aborting installation. Rebooting system...\n";
-            if (!options.dry_run) {
-                static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+            while (true) {
+                auto ev = pipeline_term->read_key(-1);
+                if (ev.key == Key::Enter) {
+                    break;
+                } else if (ev.key == Key::Escape) {
+                    pipeline_term->clear();
+                    std::cout << "\033[2J\033[H>> [Winstaller] Rebooting system...\n";
+                    if (!options.dry_run) {
+                        static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+                    }
+                    return 0;
+                }
             }
-            return 0;
+        } else {
+            std::cerr << ">> [FAILED] Installation stopped at " << to_string(result.failed_step) << "!\n"
+                      << "   Error: " << result.error_message << "\n"
+                      << "===============================================================\n";
+
+            if (non_interactive || options.dry_run) {
+                return 1;
+            }
+
+            std::cout << "\n   How would you like to proceed?\n"
+                      << "   [1] Retry installation\n"
+                      << "   [2] Abort and reboot system\n"
+                      << "   Select option [1-2]: ";
+            int retry_choice = 2;
+            if (!(std::cin >> retry_choice) || retry_choice != 1) {
+                std::cin.clear();
+                std::cout << "   Aborting installation. Rebooting system...\n";
+                if (!options.dry_run) {
+                    static_cast<void>(ProcessRunner::run("systemctl", {"reboot"}));
+                }
+                return 0;
+            }
         }
 
         prompt_cache_and_wipe_mode(options, non_interactive);

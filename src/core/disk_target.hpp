@@ -15,6 +15,7 @@ enum class DiskRejectionReason {
     not_a_disk_type,      // loop, rom, dm, etc.
     too_small,            // Less than 32 GB
     mounted_in_use,       // Root, boot, or any mountpoints present (e.g. boot USB)
+    usb_transport,        // USB removable / boot medium (excluded from target selection)
     has_partitions,       // Existing partitions found (clean disk required for v1)
     incomplete_metadata,  // Missing identity, mount state, or signature inspection
     existing_signatures,   // Filesystem, RAID, or partition-table signature found
@@ -75,6 +76,13 @@ inline bool has_any_mountpoint(const DiskInfo& dev) noexcept {
         result.is_eligible = false;
         result.rejection_reason = DiskRejectionReason::mounted_in_use;
         result.message = "Disk or its subpartitions are mounted and in use by the system.";
+        return result;
+    }
+
+    if (disk.transport.has_value() && (*disk.transport == "usb" || *disk.transport == "USB")) {
+        result.is_eligible = false;
+        result.rejection_reason = DiskRejectionReason::usb_transport;
+        result.message = "USB removable media cannot be targeted for OS installation.";
         return result;
     }
 

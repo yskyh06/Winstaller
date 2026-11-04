@@ -35,6 +35,12 @@ void test_find_targets() {
     assert(k10.has_value());
     assert(k10->file_name.find("19045") != std::string::npos);
 
+    // Case-insensitive TUI language lookup (ko-KR / en-US)
+    auto en26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "en-US", "X64");
+    assert(en26.has_value());
+    assert(en26->language_code == "en-us");
+    assert(en26->download_url.rfind("http://", 0) == 0);
+
     // Non-existent target
     auto missing = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "fr-fr", "x86");
     assert(!missing.has_value());

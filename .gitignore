@@ -1,6 +1,52 @@
+# 빌드 디렉터리 및 CMake 산출물
 /build/
+/out/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+Testing/
+CTestTestfile.cmake
+_deps/
+
+# 컴파일 바이너리 및 오브젝트
+*.o
+*.obj
+*.a
+*.so
+*.out
+
+# 디스크 및 설치 이미지 (대용량 산출물)
 *.iso
 *.esd
 *.wim
+*.img
+*.qcow2
+*.part
+SHA256SUMS
+
+# 로그 및 임시 파일
 *.log
+*.tmp
+*.swp
+*~
+
+# IDE 및 에디터 설정
+.vscode/
+.idea/
+.cache/
+.clangd/
+
+# OS 생성 파일
+.DS_Store
+Thumbs.db
+
+# 로컬 AI 에이전트 설정 및 내부 검증 문서
+.gemini/
+.geminiignore
+GEMINI.md
+WEB_CONSULTANT_README.md
+permissions_config.json
+docs/rc_*.md
 

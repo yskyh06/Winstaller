@@ -22,6 +22,12 @@ std::string WinpeBootstrapper::generate_startnet_cmd(const std::string& locale) 
            "\r\n"
            "set TARGET_DRIVE=\r\n"
            "for %%d in (C W D E F G H I J K L M N O P Q R T U V) do (\r\n"
+           "    if exist \"%%d:\\Windows\\Panther\\litewin_target.flag\" (\r\n"
+           "        set TARGET_DRIVE=%%d\r\n"
+           "        goto :found_os\r\n"
+           "    )\r\n"
+           ")\r\n"
+           "for %%d in (C W D E F G H I J K L M N O P Q R T U V) do (\r\n"
            "    if exist \"%%d:\\Windows\\System32\\ntoskrnl.exe\" (\r\n"
            "        set TARGET_DRIVE=%%d\r\n"
            "        goto :found_os\r\n"
@@ -43,7 +49,9 @@ std::string WinpeBootstrapper::generate_startnet_cmd(const std::string& locale) 
            "    copy /y S:\\EFI\\Microsoft\\Boot\\bootmgfw.efi S:\\EFI\\BOOT\\BOOTX64.EFI >nul 2>&1\r\n"
            "    del /f /q S:\\sources\\boot.wim >nul 2>&1\r\n"
            "    for %%v in (C W D E F G H I J K L M N O P Q R T U V) do (\r\n"
-           "        if exist \"%%v:\\sources\\boot.wim\" del /f /q \"%%v:\\sources\\boot.wim\" >nul 2>&1\r\n"
+           "        if exist \"%%v:\\sources\\litewin_temp.flag\" (\r\n"
+           "            if exist \"%%v:\\sources\\boot.wim\" del /f /q \"%%v:\\sources\\boot.wim\" >nul 2>&1\r\n"
+           "        )\r\n"
            "    )\r\n"
            "    echo [Litewin] UEFI Bootloader successfully configured.\r\n"
            ") else (\r\n"
@@ -241,11 +249,19 @@ WinpeBootstrapResult WinpeBootstrapper::bootstrap(const WinpeBootstrapOptions& o
         fs::create_directories(esp_sources);
         fs::copy_file(winre_path, esp_sources / "boot.wim", fs::copy_options::overwrite_existing);
 
-        // Stage boot_stage.flag to guard against reboot loops if USB is left attached
+        // Stage boot_stage.flag and target partition markers to identify exact volumes in WinPE
         fs::path litewin_meta = esp_dir / "EFI" / "Litewin";
         fs::create_directories(litewin_meta);
         std::ofstream flag_file(litewin_meta / "boot_stage.flag");
         flag_file << "STAGE2_WINPE_READY\n";
+
+        fs::path win_panther = win_dir / "Windows" / "Panther";
+        fs::create_directories(win_panther);
+        std::ofstream target_flag(win_panther / "litewin_target.flag");
+        target_flag << "LITEWIN_TARGET_OS\n";
+
+        std::ofstream temp_flag(temp_sources / "litewin_temp.flag");
+        temp_flag << "LITEWIN_TEMP_PART\n";
 
         // Write diskpart, startnet, and winpeshl.ini scripts (override recenv.exe in winre.wim)
         fs::path dp_script_path = esp_dir / "assign_letters.txt";
@@ -274,6 +290,10 @@ WinpeBootstrapResult WinpeBootstrapper::bootstrap(const WinpeBootstrapOptions& o
             }, wim_cmd);
             if (upd_proc.success()) {
                 fs::copy_file(esp_sources / "boot.wim", target_boot_wim, fs::copy_options::overwrite_existing);
+            } else if (fs::file_size(esp_sources / "boot.wim") > 1024) {
+                result.error_message = "Failed to inject startnet.cmd into boot.wim: " +
+                    (upd_proc.error_message.empty() ? upd_proc.stderr_output : upd_proc.error_message);
+                return result;
             }
         }
     } catch (const std::exception& e) {
@@ -310,13 +330,15 @@ WinpeBootstrapResult WinpeBootstrapper::bootstrap(const WinpeBootstrapOptions& o
         // Step A: Set BootNext
         (void)ProcessRunner::run("efibootmgr", {"-n", boot_num});
 
-        // Step B: Also prepend to BootOrder as fallback if firmware ignores BootNext
+        // Step B: Also prepend to BootOrder as fallback if firmware ignores BootNext (avoid duplicate head)
         std::regex re_order(R"(BootOrder:\s*([0-9A-Fa-f,]+))");
         std::smatch m;
         if (std::regex_search(create_proc.stdout_output, m, re_order)) {
             std::string current_order = m[1].str();
-            std::string new_order = boot_num + "," + current_order;
-            (void)ProcessRunner::run("efibootmgr", {"-o", new_order});
+            if (current_order.rfind(boot_num, 0) != 0) {
+                std::string new_order = boot_num + "," + current_order;
+                (void)ProcessRunner::run("efibootmgr", {"-o", new_order});
+            }
         }
     }
 

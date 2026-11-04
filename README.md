@@ -1,89 +1,64 @@
-# Litewin
+# Winstaller
 
-RAM 기반 경량 Linux에서 Windows 설치를 준비하고 WinPE로 인계하는 도구를
-기능별로 개발합니다. 목표·미검증 사항·TODO는 [plan.md](plan.md)를 참조하세요.
+인터넷만 연결하면 부팅부터 바탕화면 진입까지 알아서 끝내주는 초경량 Windows 자동 설치 도구입니다.
 
-현재 구현은 **디스크 조회 JSON 파서**와 **Linux 네트워크 인터페이스 조회 함수**입니다.
-실제 디스크 조회나 설치 가능 판단, 다운로드, 네트워크 연결 설정, 설치 기능은 아직 없습니다.
+---
 
-## 빌드와 테스트
+## 개요
 
-C++20 컴파일러, CMake 3.20 이상과 CMake가 사용할 빌드 도구가 필요합니다.
-JSON 의존성은 저장소에 포함되어 빌드 중 다운로드하지 않습니다.
+기존에는 윈도우를 설치하려면 대용량 이미지를 내려받아 USB를 만들고, 복잡한 파티션 설정과 계정 로그인, 끝없는 업데이트 대기 과정을 직접 거쳐야 했습니다.
 
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --target disk_inventory_tests network_inspector_tests inspect_network
-ctest --test-dir build --output-on-failure
-```
+**Winstaller**는 이 모든 과정을 자동화했습니다. 전용 USB로 부팅한 뒤 설치할 디스크와 에디션만 고르면 마이크로소프트 공식 서버에서 순정 윈도우를 직접 내려받아 설치부터 초기 설정까지 한 번에 마칩니다. 부팅 직후 프로그램이 메모리에 올라가므로 **설치 도중 USB를 뽑아도 안전하게 완료**됩니다.
 
-전체 Linux/USB 이미지를 빌드하지 않습니다. 실제 블록 장치 접근은 하지 않습니다.
-네트워크 라이브러리·테스트·조회 예제는 Linux에서만 빌드합니다.
-단위 테스트는 저장 데이터와 합성 인터페이스를 사용하며, `integration` 레이블의
-테스트 하나만 실제 인터페이스를 읽습니다. 외부 서버에 요청하지 않습니다.
-일반 Linux에서는 관리자 권한이 필요 없지만, 제한된 샌드박스는 조회를 차단할 수 있습니다.
-그 환경에서는 단위 테스트를 먼저 실행하고 실제 조회 테스트는 허용된 환경에서 실행합니다.
+> [!CAUTION]
+> **베타 버전 안내**
+> 본 프로그램은 정식 출시 전 **베타 버전**입니다. 예기치 못한 오류로 데이터가 손실될 수 있으므로 **설치 전 중요한 파일은 반드시 별도의 저장소에 백업**해 주세요.
 
-```sh
-ctest --test-dir build --output-on-failure -LE integration
-ctest --test-dir build --output-on-failure -L integration
-```
+---
 
-## 파서 사용
+## MediaCreationTool과 무엇이 다른가요?
 
-공개 헤더는 `core/disk_inventory.hpp`, CMake 타깃은 `litewin_inventory`입니다.
+| 항목 | 마이크로소프트 공식 도구 | **Winstaller** |
+| :--- | :--- | :--- |
+| **사전 준비** | 매번 5GB 이상 다운로드 및 USB 제작 필요 | **초소형 부팅 USB 하나로 즉시 시작** |
+| **USB 용량 점유** | 설치 안 할 때도 5GB 이상 상시 차지 | **1GB 미만의 초저용량으로 공간 낭비 최소화** |
+| **USB 분리** | 설치가 끝날 때까지 분리 불가 | **부팅 직후 바로 USB 제거 가능** |
+| **구형 PC 지원** | TPM 2.0 및 CPU 미달 시 설치 차단 | **우회 설정 자동 적용으로 구형 PC 완벽 설치** |
+| **계정 생성** | 마이크로소프트 온라인 계정 강제 | **로컬 계정 자동 생성으로 즉시 로그인** |
+| **초기 대기 시간** | 초기 설정 중 강제 업데이트로 장시간 대기 | **초기 업데이트 확인 건너뛰기로 빠른 바탕화면 진입** |
+| **설치 과정** | 수동 파티션 포맷 및 수십 번의 클릭 필요 | **디스크와 에디션 선택 후 전 과정 무인 진행** |
 
-```cpp
-auto result = litewin::parse_disk_inventory(json_text);
-if (const auto* inventory = std::get_if<litewin::DiskInventory>(&result)) {
-    // inventory contains device trees, not a list of approved install targets.
-} else {
-    const auto& error = std::get<litewin::ParseError>(result);
-    // Report error.location and error.message to the caller.
-}
-```
+---
 
-입력 열은 `NAME,PATH,TYPE,SIZE,MODEL,SERIAL,TRAN,MOUNTPOINTS`에 해당합니다.
-`SIZE`는 `--bytes`를 사용한 정수여야 합니다. 식별에 필요한 필드 누락과
-타입 오류는 실패로 반환하며, 선택 정보의 누락은 알 수 없음으로 보존합니다.
-알 수 없는 추가 필드는 허용합니다. 자세한 계약은 헤더와 계획 문서를 참조하세요.
+## 최소 설치 사양
 
-테스트 데이터는 합성 데이터이며 실제 장비의 식별 정보를 포함하지 않습니다.
-외부 라이브러리의 출처와 라이선스는 [third_party/README.md](third_party/README.md)에 있습니다.
+- **프로세서**: 64비트 호환 CPU — 인텔 6·7세대 등 공식 미지원 구형 CPU 포함
+- **메모리**: RAM 4GB 이상 — 8GB 이상 권장
+- **저장 공간**: 32GB 이상 비어 있는 SSD 또는 HDD
+- **메인보드**: UEFI 부팅 지원 필수 — 레거시 BIOS 미지원
+- **네트워크**: 유선 랜 또는 Wi-Fi 인터넷 연결
 
-## 네트워크 인터페이스 조회
+---
 
-공개 함수는 `platform/network_inspector.hpp`의
-`litewin::inspect_network_interfaces()`, CMake 타깃은 `litewin_network`입니다.
-공통 데이터 구조는 `core/network_interface.hpp`에 정의합니다.
+## 주요 기능
 
-```cpp
-auto result = litewin::inspect_network_interfaces();
-if (const auto* interfaces = std::get_if<litewin::NetworkInventory>(&result)) {
-    // Enumerate interfaces and their addresses; this is not a connectivity test.
-} else {
-    const auto& error = std::get<litewin::NetworkInspectionError>(result);
-    // Report error.operation and error.code.message().
-}
-```
+- **공식 순정 이미지 직결 다운로드**: 마이크로소프트 공식 서버에서 순정 파일만 내려받으며 해시 검증으로 파일 손상을 완벽히 차단합니다.
+- **원클릭 자동 파티셔닝**: 복잡한 파티션 나누기 없이 부팅 영역과 C 드라이브를 규격에 맞춰 자동으로 구성합니다.
+- **임시 공간 자동 회수**: 설치 중 사용한 임시 파티션을 첫 부팅 시 스스로 삭제하고 C 드라이브 용량을 끝까지 늘려줍니다.
+- **메인보드 정품 키 자동 인식**: 메인보드에 내장된 윈도우 정품 키를 스스로 찾아내어 알맞은 에디션을 추천합니다.
+- **개인정보 추적 및 암호화 방지**: 불필요한 광고 추적과 BitLocker 자동 암호화를 기본으로 차단하여 속도 저하를 막습니다.
 
-직접 확인할 수 있는 작은 예제 실행 파일도 제공합니다. 장치 이름·유형·상태·IP 주소를
-터미널에 출력합니다.
+---
 
-```sh
-./build/inspect_network
-```
+## 유의사항
 
-- `getifaddrs()`로 이름·활성 상태·IPv4/IPv6 주소를 조회하고 목록을 자동 해제합니다.
-- down 상태, IP 미할당, 루프백과 가상 인터페이스도 제외하지 않습니다.
-- sysfs의 `wireless` 또는 `phy80211` 정보로 Wi-Fi를 구분합니다. 이름 접두사로 추측하지 않습니다.
-- Ethernet 링크 유형에는 가상 인터페이스도 포함될 수 있습니다. 물리 유선 연결을 보장하지 않습니다.
-- 분류 정보가 없거나 접근할 수 없으면 종류를 `unknown`으로 유지합니다.
-- IPv6 scope ID를 보존하며 장치 이름·주소 순서를 정렬하고 동일 주소 중복을 제거합니다.
-- 장치 없음은 빈 목록 성공, OS 조회 실패는 작업 이름과 오류 코드를 반환합니다.
-- IP나 활성 플래그가 인터넷 연결을 뜻하지 않습니다. DNS·HTTPS 검사, 드라이버 진단,
-  rfkill 조회, Wi-Fi 설정 화면 실행은 후속 기능입니다.
-- 관측 도중 장치 상태가 바뀔 수 있으므로 연결 설정 후 다시 호출해야 합니다.
+- **디스크 전체 초기화**: 선택한 디스크의 모든 파티션과 데이터가 영구 삭제됩니다. 다른 디스크와 혼동하지 않도록 주의하세요.
+- **단일 OS 설치 전용**: 한 디스크에 여러 운영체제를 함께 쓰는 멀티부팅은 지원하지 않습니다.
+- **네트워크 환경**: 설치 도중 약 5GB의 데이터를 내려받으므로 안정적인 인터넷 연결이 필요합니다.
 
-테스트는 Wi-Fi 표식, 주소 없는 장치, 여러 주소와 scope, 조회 실패, 자원 해제를
-합성 데이터로 검증합니다. 실제 Wi-Fi 하드웨어에서의 확인은 아직 하지 않았습니다.
+---
+
+## 라이선스
+
+- **Winstaller**: 오픈소스 라이선스로 배포되며, 빌드 및 아키텍처에 관한 기술 문서는 [DEVELOPMENT.md](docs/DEVELOPMENT.md)에서 확인할 수 있습니다.
+- **Windows**: 설치되는 윈도우 운영체제의 저작권은 Microsoft에 있으며, 정품 인증 및 사용에는 적법한 라이선스가 필요합니다.

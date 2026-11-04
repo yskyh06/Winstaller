@@ -38,10 +38,10 @@ struct PipelineOptions {
     std::uint64_t target_disk_size = 128ULL * 1024 * 1024 * 1024;
     // Windows ESD Target (version, language, architecture, download URL)
     EsdTarget esd_target = get_default_esd_target();
-    // Index within the ESD/WIM image (typically 1 for Home/Pro depending on ESD)
-    int image_index = 1;
-    // Preferred edition name (e.g., "Pro", "Home") for automatic Full ESD index resolution
-    std::string edition_preference = "Pro";
+    // Index within the ESD/WIM image (defaults to 4 for Windows 11 Home)
+    int image_index = 4;
+    // Preferred edition name for automatic Full ESD index resolution
+    std::string edition_preference = "Windows 11 Home";
     // When true, preserves Partition 5 (LitewinTemp) and reuses existing install.esd on P5
     bool reuse_existing_esd = false;
     // Unattended installation customization options
