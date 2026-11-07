@@ -35,14 +35,34 @@ void test_find_targets() {
     assert(k10.has_value());
     assert(k10->file_name.find("19045") != std::string::npos);
 
-    // Case-insensitive TUI language lookup (ko-KR / en-US)
+    // Case-insensitive TUI language lookup (ko-KR / en-US / ja-JP / zh-CN / de-DE / fr-FR / es-ES)
     auto en26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "en-US", "X64");
     assert(en26.has_value());
     assert(en26->language_code == "en-us");
     assert(en26->download_url.rfind("http://", 0) == 0);
 
+    auto ja26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "ja-JP", "x64");
+    assert(ja26.has_value());
+    assert(ja26->language_code == "ja-jp");
+
+    auto zh26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "zh-cn", "x64");
+    assert(zh26.has_value());
+    assert(zh26->language_code == "zh-cn");
+
+    auto de26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "de-DE", "x64");
+    assert(de26.has_value());
+    assert(de26->language_code == "de-de");
+
+    auto fr26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "fr-FR", "x64");
+    assert(fr26.has_value());
+    assert(fr26->language_code == "fr-fr");
+
+    auto es26 = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "es-ES", "x64");
+    assert(es26.has_value());
+    assert(es26->language_code == "es-es");
+
     // Non-existent target
-    auto missing = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "fr-fr", "x86");
+    auto missing = litewin::find_esd_target(litewin::WindowsVersion::Win11_26H2, "it-it", "x86");
     assert(!missing.has_value());
     std::cout << "[PASS] test_find_targets\n";
 }

@@ -91,16 +91,19 @@ ScreenAction WinstallerTui::prompt_wifi() {
         auto probe = probe_internet(default_internet_probe_targets(), true);
         if (probe.is_online || ethernet_online) {
             term_.print_at(row + 2, col + 4, AnsiTerminal::color_green() + "[OK] Active Internet Connection Detected." + AnsiTerminal::color_reset() + "                    ");
-            term_.print_at(row + 4, col + 4, "Winstaller is connected and ready to download Windows images.");
-            term_.print_at(row + 6, col + 4, "Press Enter to continue, W for Network Manager, or B to go Back.");
+            term_.print_at(row + 4, col + 4, "Winstaller is connected and ready to download Windows images.        ");
 
-            term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Continue (Enter) ] " + AnsiTerminal::color_reset());
-            term_.print_at(row + 14, col + 28, " [ Wi-Fi Tool (W) ] ");
-            term_.print_at(row + 14, col + 50, " [ Back (B) ] ");
-            term_.print_at(row + 14, col + 64, " [ Esc ] ");
+            int countdown = 5;
+            bool cancel_auto = false;
+            while (countdown > 0 && !cancel_auto) {
+                term_.print_at(row + 6, col + 4, "Advancing to disk selection in " + AnsiTerminal::color_teal() + AnsiTerminal::color_bold() +
+                    std::to_string(countdown) + "s" + AnsiTerminal::color_reset() + "... (or press Enter)          ");
 
-            while (true) {
-                auto ev = term_.read_key(-1);
+                term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Continue (" + std::to_string(countdown) + "s / Enter) ] " + AnsiTerminal::color_reset());
+                term_.print_at(row + 14, col + 34, " [ Wi-Fi Tool (W) ] ");
+                term_.print_at(row + 14, col + 54, " [ Exit (Esc) ] ");
+
+                auto ev = term_.read_key(1000);
                 if (ev.key == Key::Enter) return ScreenAction::Next;
                 if (ev.key == Key::Back) return ScreenAction::Back;
                 if (ev.key == Key::Escape) return ScreenAction::Exit;
@@ -110,8 +113,13 @@ ScreenAction WinstallerTui::prompt_wifi() {
                     (void)open_network_settings(NetworkConfigUiMode::tui_only);
                     term_.enter_raw_mode();
                     term_.hide_cursor();
+                    cancel_auto = true;
                     break;
                 }
+                --countdown;
+            }
+            if (!cancel_auto) {
+                return ScreenAction::Next;
             }
             continue;
         }
@@ -133,7 +141,11 @@ ScreenAction WinstallerTui::prompt_wifi() {
 
         bool re_probe = false;
         while (!re_probe) {
-            auto ev = term_.read_key(-1);
+            auto ev = term_.read_key(2500); // Auto-detect hotplugged USB tethering or Ethernet cable
+            if (ev.key == Key::None) {
+                re_probe = true;
+                break;
+            }
             if (ev.key == Key::Enter) {
                 term_.show_cursor();
                 term_.exit_raw_mode();
@@ -224,10 +236,22 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
         for (std::size_t i = 0; i < disks.size() && i < 4; ++i) {
             int d_row = row + 5 + static_cast<int>(i) * 2;
             const auto& d = disks[i];
-            std::string gb = std::to_string(d.size_bytes / (1024ULL * 1024 * 1024)) + " GB";
+            std::uint64_t total_gb = d.size_bytes / (1024ULL * 1024 * 1024);
+            std::uint64_t allocated_bytes = 0;
+            for (const auto& child : d.children) {
+                allocated_bytes += child.size_bytes;
+            }
+            std::uint64_t free_gb = (d.size_bytes > allocated_bytes)
+                ? ((d.size_bytes - allocated_bytes) / (1024ULL * 1024 * 1024))
+                : 0;
+
             std::string model = d.model.value_or(d.name);
             std::string tran = d.transport.value_or(d.path.find("nvme") != std::string::npos ? "nvme" : "disk");
-            std::string label = d.path + " [" + model + ", " + gb + "] (" + tran + ")";
+            std::string space_info = std::to_string(total_gb) + "G (Free: " + std::to_string(free_gb) + "G)";
+            std::string label = d.path + " [" + model + ", " + space_info + "] (" + tran + ")";
+            if (!d.children.empty()) {
+                label += " [Partitions: " + std::to_string(d.children.size()) + "]";
+            }
             if (label.size() > 66) label = label.substr(0, 63) + "...";
 
             if (static_cast<int>(i) == selected_idx) {
@@ -256,6 +280,37 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
         } else if (ev.key == Key::Escape) {
             return {ScreenAction::Exit, ""};
         } else if (ev.key == Key::Enter) {
+            if (!disks[selected_idx].children.empty()) {
+                int m_w = 68;
+                int m_h = 10;
+                int m_col = std::max(2, (term_.cols() - m_w) / 2);
+                int m_row = std::max(6, (term_.rows() - m_h) / 2);
+
+                term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
+                term_.draw_box(m_row, m_col, m_w, m_h, " DISK ERROR: EXISTING PARTITIONS ", true);
+                term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() +
+                    "[!] Error: Disk has " + std::to_string(disks[selected_idx].children.size()) +
+                    " existing partition(s)!" + AnsiTerminal::color_reset());
+                term_.print_at(m_row + 4, m_col + 4, "Winstaller requires a clean disk. Existing data will be wiped.");
+                term_.print_at(m_row + 5, m_col + 4, "Do you want to FORCE WIPE all partitions and proceed?");
+                term_.print_at(m_row + 7, m_col + 4, AnsiTerminal::bg_red() + " [ Force Wipe (Enter) ] " + AnsiTerminal::color_reset());
+                term_.print_at(m_row + 7, m_col + 36, " [ Cancel (Esc / B) ] ");
+
+                bool proceed = false;
+                while (true) {
+                    auto m_ev = term_.read_key(-1);
+                    if (m_ev.key == Key::Enter) {
+                        proceed = true;
+                        break;
+                    } else if (m_ev.key == Key::Escape || m_ev.key == Key::Back) {
+                        proceed = false;
+                        break;
+                    }
+                }
+                if (!proceed) {
+                    continue;
+                }
+            }
             break;
         }
     }
@@ -369,7 +424,12 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
 
     const std::vector<std::pair<std::string, std::string>> languages = {
         {"ko-KR", "Korean (ko-KR)"},
-        {"en-US", "English (en-US)"}
+        {"en-US", "English (en-US)"},
+        {"ja-JP", "Japanese (ja-JP)"},
+        {"zh-CN", "Chinese Simplified (zh-CN)"},
+        {"de-DE", "German (de-DE)"},
+        {"fr-FR", "French (fr-FR)"},
+        {"es-ES", "Spanish (es-ES)"}
     };
     int lang_idx = 0;
     int cur_row = 0; // 0 = Edition, 1 = Language, 2 = Install Source, 3 = Start Button
