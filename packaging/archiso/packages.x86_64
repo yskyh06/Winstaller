@@ -9,6 +9,9 @@ grub
 efibootmgr
 edk2-shell
 wimlib
+squashfs-tools
+erofs-utils
+e2fsprogs
 util-linux
 ntfs-3g
 dosfstools

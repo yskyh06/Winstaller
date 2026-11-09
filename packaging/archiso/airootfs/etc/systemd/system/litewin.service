@@ -6,6 +6,7 @@ Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStartPre=-/usr/bin/setfont ter-v24b
 ExecStart=/usr/local/bin/litewin
 StandardInput=tty

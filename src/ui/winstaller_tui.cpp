@@ -1,4 +1,5 @@
 #include "ui/winstaller_tui.hpp"
+#include "core/linux_catalog.hpp"
 #include "platform/network_inspector.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/network_configurator.hpp"
@@ -19,7 +20,7 @@ void WinstallerTui::draw_header(const std::string& subtitle) {
     int w = 76;
     int col = std::max(2, (term_.cols() - w) / 2);
     term_.draw_box(1, col, w, 3, "Winstaller", true);
-    term_.print_at(2, col + 3, AnsiTerminal::color_bold() + AnsiTerminal::color_teal() + "✦ Winstaller" + AnsiTerminal::color_reset() + " - Automated Windows Deployment Tool");
+    term_.print_at(2, col + 3, AnsiTerminal::color_bold() + AnsiTerminal::color_teal() + "* Winstaller" + AnsiTerminal::color_reset() + " - Automated OS Deployment Tool");
     if (!subtitle.empty()) {
         int sub_col = col + w - static_cast<int>(subtitle.size()) - 3;
         if (sub_col > col + 35) {
@@ -227,12 +228,14 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
         }
     }
 
-    term_.draw_box(row, col, w, h, "Target Storage Disk Selection", true);
-    term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + "Select target drive for Windows 11 installation:" + AnsiTerminal::color_reset());
-    term_.print_at(row + 3, col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "⚠️  WARNING: All existing data on this drive will be WIPED!" + AnsiTerminal::color_reset());
-
     int selected_idx = 0;
     while (true) {
+        term_.update_size();
+        draw_header("Target Disk Selection");
+        term_.draw_box(row, col, w, h, "Target Storage Disk Selection", true);
+        term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + "Select target drive for OS installation:" + AnsiTerminal::color_reset());
+        term_.print_at(row + 3, col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "[!] WARNING: All existing data on this drive will be WIPED!" + AnsiTerminal::color_reset());
+
         for (std::size_t i = 0; i < disks.size() && i < 4; ++i) {
             int d_row = row + 5 + static_cast<int>(i) * 2;
             const auto& d = disks[i];
@@ -252,20 +255,21 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
             if (!d.children.empty()) {
                 label += " [Partitions: " + std::to_string(d.children.size()) + "]";
             }
-            if (label.size() > 66) label = label.substr(0, 63) + "...";
+            if (label.size() > 60) label = label.substr(0, 57) + "...";
 
             if (static_cast<int>(i) == selected_idx) {
                 term_.print_at(d_row, col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) " + label + AnsiTerminal::color_reset());
             } else {
-                term_.print_at(d_row, col + 4, AnsiTerminal::color_slate() + "   ( ) " + label + "    " + AnsiTerminal::color_reset());
+                term_.print_at(d_row, col + 4, AnsiTerminal::color_slate() + "   ( ) " + label + AnsiTerminal::color_reset());
             }
         }
 
-        term_.print_at(row + 13, col + 4, AnsiTerminal::color_slate() + "※ Continuing (Enter) constitutes agreement to Terms & Liability Waiver." + AnsiTerminal::color_reset());
+        term_.print_at(row + 13, col + 4, AnsiTerminal::color_slate() + "* Continuing (Enter) constitutes agreement to Terms & Liability Waiver." + AnsiTerminal::color_reset());
 
-        term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Agree & Select (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(row + 15, col + 34, " [ View EULA (E) ] ");
-        term_.print_at(row + 15, col + 54, " [ Exit (Esc) ] ");
+        term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Agree & Install (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(row + 15, col + 35, " [ EULA (E) ] ");
+        term_.print_at(row + 15, col + 50, " [ Back (B) ] ");
+        term_.print_at(row + 15, col + 64, " [ Esc ] ");
 
         auto ev = term_.read_key(-1);
         if (ev.key == Key::Up) {
@@ -319,40 +323,151 @@ std::pair<ScreenAction, std::string> WinstallerTui::prompt_disk_selection(const 
     return {ScreenAction::Next, chosen_disk};
 }
 
+std::vector<std::string> WinstallerTui::get_os_tabs() {
+    return {"Windows", "Ubuntu"};
+}
+
+std::vector<std::pair<std::string, std::string>> WinstallerTui::get_tab_os_items(const std::string& tab_name) {
+    if (tab_name == "Windows") {
+        return {
+            {"win11-home", "Windows 11 Home"},
+            {"win11-pro", "Windows 11 Pro"}
+        };
+    }
+
+    std::optional<OsTabCategory> category;
+    if (tab_name == "Ubuntu") {
+        category = OsTabCategory::Ubuntu;
+    } else if (tab_name == "Debian") {
+        category = OsTabCategory::Debian;
+    } else if (tab_name == "RHEL / Fedora") {
+        category = OsTabCategory::RhelFedora;
+    } else if (tab_name == "Arch") {
+        category = OsTabCategory::Arch;
+    }
+
+    if (!category.has_value()) {
+        return {};
+    }
+
+    const auto targets = get_linux_targets_by_tab(*category);
+    std::vector<std::pair<std::string, std::string>> items;
+    items.reserve(targets.size());
+    for (const auto& target : targets) {
+        items.emplace_back(target.id, target.display_name);
+    }
+    return items;
+}
+
 void WinstallerTui::show_edition_modal(TuiEditionChoice& choice) {
     term_.update_size();
-    int m_w = 58;
-    int m_h = 9;
+    int m_w = 76;
+    int m_h = 18;
     int m_col = std::max(2, (term_.cols() - m_w) / 2);
-    int m_row = std::max(6, (term_.rows() - m_h) / 2);
+    int m_row = std::max(5, (term_.rows() - m_h) / 2);
 
-    int cur_sel = (choice.edition_index == 6) ? 1 : 0; // 0 = Home, 1 = Pro
+    const auto tabs = get_os_tabs();
+    int active_tab_idx = 0;
+    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
+        if (tabs[i] == choice.os_tab) {
+            active_tab_idx = i;
+            break;
+        }
+    }
+    if (choice.is_linux && active_tab_idx == 0 && tabs.size() > 1) {
+        active_tab_idx = 1;
+    }
+
+    auto items = get_tab_os_items(tabs[active_tab_idx]);
+    int cur_item_idx = 0;
+    if (tabs[active_tab_idx] == "Windows") {
+        cur_item_idx = (choice.edition_index == 6) ? 1 : 0;
+    } else {
+        for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+            if (items[i].first == choice.linux_distro_id || items[i].second == choice.edition_name) {
+                cur_item_idx = i;
+                break;
+            }
+        }
+    }
 
     while (true) {
         term_.fill_rect(m_row, m_col, m_w, m_h, ' ');
-        term_.draw_box(m_row, m_col, m_w, m_h, "Select Windows Edition", true);
+        term_.draw_box(m_row, m_col, m_w, m_h, "Select Target Operating System", true);
 
-        if (cur_sel == 0) {
-            term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) Windows 11 Home (Index 4) [Consumer Standard]" + AnsiTerminal::color_reset());
-            term_.print_at(m_row + 3, m_col + 4, AnsiTerminal::color_slate() + "   ( ) Windows 11 Pro  (Index 6) [Professional]" + AnsiTerminal::color_reset());
-        } else {
-            term_.print_at(m_row + 2, m_col + 4, AnsiTerminal::color_slate() + "   ( ) Windows 11 Home (Index 4) [Consumer Standard]" + AnsiTerminal::color_reset());
-            term_.print_at(m_row + 3, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) Windows 11 Pro  (Index 6) [Professional]" + AnsiTerminal::color_reset());
+        // Render Top Horizontal Tab Bar:
+        // [ Windows ] | [ Ubuntu ] | [ Debian ] | [ RHEL / Fedora ] | [ Arch ]
+        std::string tab_bar;
+        for (std::size_t i = 0; i < tabs.size(); ++i) {
+            if (static_cast<int>(i) == active_tab_idx) {
+                tab_bar += AnsiTerminal::bg_teal() + AnsiTerminal::color_bold() + " [ " + tabs[i] + " ] " + AnsiTerminal::color_reset();
+            } else {
+                tab_bar += AnsiTerminal::color_slate() + " [ " + tabs[i] + " ] " + AnsiTerminal::color_reset();
+            }
+            if (i + 1 < tabs.size()) {
+                tab_bar += AnsiTerminal::color_gray() + "|" + AnsiTerminal::color_reset();
+            }
+        }
+        term_.print_at(m_row + 2, m_col + 3, tab_bar);
+
+        // Divider
+        std::string div_line;
+        for (int c = 0; c < m_w - 6; ++c) div_line += "─";
+        term_.print_at(m_row + 3, m_col + 3, AnsiTerminal::color_slate() + div_line + AnsiTerminal::color_reset());
+
+        // Single list of OS versions for the active tab
+        int max_display = 10;
+        int top_idx = 0;
+        if (cur_item_idx >= max_display) {
+            top_idx = cur_item_idx - max_display + 1;
         }
 
-        term_.print_at(m_row + 6, m_col + 8, AnsiTerminal::bg_teal() + " [ Select (Enter) ] " + AnsiTerminal::color_reset());
-        term_.print_at(m_row + 6, m_col + 32, " [ Cancel (Esc) ] ");
+        for (int i = 0; i < max_display && (top_idx + i) < static_cast<int>(items.size()); ++i) {
+            int idx = top_idx + i;
+            int line_row = m_row + 4 + i;
+            const auto& item = items[idx];
+            if (idx == cur_item_idx) {
+                term_.print_at(line_row, m_col + 4, AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + " > (*) " + item.second + AnsiTerminal::color_reset());
+            } else {
+                term_.print_at(line_row, m_col + 4, AnsiTerminal::color_slate() + "   ( ) " + item.second + AnsiTerminal::color_reset());
+            }
+        }
+
+        term_.print_at(m_row + 15, m_col + 4, AnsiTerminal::color_slate() + "Left/Right: Switch Tab  │  Up/Down: Select  │  Enter: Confirm" + AnsiTerminal::color_reset());
+        term_.print_at(m_row + 16, m_col + 14, AnsiTerminal::bg_teal() + " [ Select (Enter) ] " + AnsiTerminal::color_reset());
+        term_.print_at(m_row + 16, m_col + 42, " [ Cancel (Esc) ] ");
 
         auto ev = term_.read_key(-1);
-        if (ev.key == Key::Up || ev.key == Key::Down || ev.key == Key::Tab) {
-            cur_sel = 1 - cur_sel;
+        if (ev.key == Key::Left) {
+            active_tab_idx = (active_tab_idx + static_cast<int>(tabs.size()) - 1) % static_cast<int>(tabs.size());
+            items = get_tab_os_items(tabs[active_tab_idx]);
+            cur_item_idx = 0;
+        } else if (ev.key == Key::Right) {
+            active_tab_idx = (active_tab_idx + 1) % static_cast<int>(tabs.size());
+            items = get_tab_os_items(tabs[active_tab_idx]);
+            cur_item_idx = 0;
+        } else if (ev.key == Key::Up) {
+            if (!items.empty()) {
+                cur_item_idx = (cur_item_idx + static_cast<int>(items.size()) - 1) % static_cast<int>(items.size());
+            }
+        } else if (ev.key == Key::Down || ev.key == Key::Tab) {
+            if (!items.empty()) {
+                cur_item_idx = (cur_item_idx + 1) % static_cast<int>(items.size());
+            }
         } else if (ev.key == Key::Enter) {
-            if (cur_sel == 0) {
-                choice.edition_index = 4;
-                choice.edition_name = "Windows 11 Home";
-            } else {
-                choice.edition_index = 6;
-                choice.edition_name = "Windows 11 Pro";
+            if (!items.empty() && cur_item_idx >= 0 && cur_item_idx < static_cast<int>(items.size())) {
+                const auto& sel = items[cur_item_idx];
+                choice.os_tab = tabs[active_tab_idx];
+                choice.edition_name = sel.second;
+                if (tabs[active_tab_idx] == "Windows") {
+                    choice.is_linux = false;
+                    choice.linux_distro_id = "";
+                    choice.edition_index = (cur_item_idx == 1) ? 6 : 4;
+                } else {
+                    choice.is_linux = true;
+                    choice.linux_distro_id = sel.first;
+                    choice.reuse_existing_esd = false;
+                }
             }
             break;
         } else if (ev.key == Key::Escape) {
@@ -419,6 +534,9 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
         choice.edition_index = 4;
         choice.edition_name = "Windows 11 Home";
     }
+    choice.is_linux = false;
+    choice.os_tab = "Windows";
+    choice.linux_distro_id = "";
     choice.language = "ko-KR";
     choice.reuse_existing_esd = cached_esd_found;
 
@@ -446,30 +564,33 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
             return cur_row == r ? (AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + "> " + AnsiTerminal::color_reset()) : "  ";
         };
 
-        // Row 0: Windows Edition
+        // Row 0: Target OS / Edition
         std::string ed_field = "[ " + choice.edition_name + " ]";
-        std::string ed_hint = (cur_row == 0) ? (AnsiTerminal::color_teal() + " (Press Enter to change)" + AnsiTerminal::color_reset()) : "";
-        term_.print_at(row + 5, col + 4, row_active(0) + AnsiTerminal::color_bold() + "[1] Windows Edition : " + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + ed_field + AnsiTerminal::color_reset() + ed_hint + "         ");
+        std::string os_label = "[1] Target OS       : ";
+        term_.print_at(row + 5, col + 4, row_active(0) + AnsiTerminal::color_bold() + os_label + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + ed_field + AnsiTerminal::color_reset());
 
         // Row 1: Target Language
         std::string lang_field = "[ " + languages[lang_idx].second + " ]";
-        std::string lang_hint = (cur_row == 1) ? (AnsiTerminal::color_teal() + " (Press Enter to change)" + AnsiTerminal::color_reset()) : "";
-        term_.print_at(row + 7, col + 4, row_active(1) + AnsiTerminal::color_bold() + "[2] Target Language : " + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + lang_field + AnsiTerminal::color_reset() + lang_hint + "         ");
+        term_.print_at(row + 7, col + 4, row_active(1) + AnsiTerminal::color_bold() + "[2] Target Language : " + AnsiTerminal::color_reset() + AnsiTerminal::color_cyan() + lang_field + AnsiTerminal::color_reset());
 
         // Row 2: Install Source (renamed from ESD Source)
-        term_.print_at(row + 9, col + 4, row_active(2) + AnsiTerminal::color_bold() + "[3] Install Source   : " + AnsiTerminal::color_reset() + (cur_row == 2 ? AnsiTerminal::color_teal() + "(Press Space to toggle)" + AnsiTerminal::color_reset() : "                       "));
-        if (cached_esd_found) {
-            std::string esd_check = choice.reuse_existing_esd ? "[X] Local Cache on P5 (Fastest, skip download)" : "[ ] Fresh Download from Microsoft CDN        ";
+        term_.print_at(row + 9, col + 4, row_active(2) + AnsiTerminal::color_bold() + "[3] Install Source  : " + AnsiTerminal::color_reset() + (cur_row == 2 && !choice.is_linux ? AnsiTerminal::color_teal() + "(Press Space to toggle)" + AnsiTerminal::color_reset() : ""));
+        if (choice.is_linux) {
+            term_.print_at(row + 10, col + 8, AnsiTerminal::color_green() + "[*] Official HTTPS Mirror (Direct Stream & Verify)" + AnsiTerminal::color_reset());
+        } else if (cached_esd_found) {
+            std::string esd_check = choice.reuse_existing_esd ? "[X] Local Cache on P5 (Fastest, skip download)" : "[ ] Fresh Download from Microsoft CDN";
             term_.print_at(row + 10, col + 8, AnsiTerminal::color_green() + esd_check + AnsiTerminal::color_reset());
         } else {
             term_.print_at(row + 10, col + 8, AnsiTerminal::color_slate() + "[!] Fresh Download from Microsoft CDN (No local cache)" + AnsiTerminal::color_reset());
         }
 
+        term_.print_at(row + 12, col + 4, AnsiTerminal::color_slate() + "Up/Down: Move  |  Enter/Space: Change Option" + AnsiTerminal::color_reset());
+
         // Action Buttons at bottom
         if (cur_row == 3) {
-            term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+            term_.print_at(row + 14, col + 4, AnsiTerminal::bg_teal() + " [ Next: Select Disk (Enter) ] " + AnsiTerminal::color_reset());
         } else {
-            term_.print_at(row + 14, col + 4, AnsiTerminal::color_bold() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+            term_.print_at(row + 14, col + 4, AnsiTerminal::color_bold() + " [ Next: Select Disk (Enter) ] " + AnsiTerminal::color_reset());
         }
         term_.print_at(row + 14, col + 38, " [ Back (B) ] ");
         term_.print_at(row + 14, col + 54, " [ Exit (Esc) ] ");
@@ -477,19 +598,21 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
         auto ev = term_.read_key(-1);
         if (ev.key == Key::Up) {
             cur_row = (cur_row + 3) % 4;
-            if (cur_row == 2 && !cached_esd_found) cur_row = 1;
+            if (cur_row == 2 && (!cached_esd_found || choice.is_linux)) cur_row = 1;
         } else if (ev.key == Key::Down || ev.key == Key::Tab) {
             cur_row = (cur_row + 1) % 4;
-            if (cur_row == 2 && !cached_esd_found) cur_row = 3;
+            if (cur_row == 2 && (!cached_esd_found || choice.is_linux)) cur_row = 3;
         } else if (ev.key == Key::Enter) {
             if (cur_row == 0) {
                 show_edition_modal(choice);
+                cur_row = 1;
             } else if (cur_row == 1) {
                 show_language_modal(choice, lang_idx, languages);
-                if (lang_idx != 0 && cached_esd_found) {
+                if (lang_idx != 0 && cached_esd_found && !choice.is_linux) {
                     choice.reuse_existing_esd = false;
                 }
-            } else if (cur_row == 2 && cached_esd_found) {
+                cur_row = 3;
+            } else if (cur_row == 2 && cached_esd_found && !choice.is_linux) {
                 choice.reuse_existing_esd = !choice.reuse_existing_esd;
             } else if (cur_row == 3) {
                 return {ScreenAction::Next, choice};
@@ -497,15 +620,180 @@ std::pair<ScreenAction, TuiEditionChoice> WinstallerTui::prompt_edition_selectio
         } else if (ev.key == Key::Space) {
             if (cur_row == 0) {
                 show_edition_modal(choice);
+                cur_row = 1;
             } else if (cur_row == 1) {
                 show_language_modal(choice, lang_idx, languages);
-            } else if (cur_row == 2 && cached_esd_found) {
+                cur_row = 3;
+            } else if (cur_row == 2 && cached_esd_found && !choice.is_linux) {
                 choice.reuse_existing_esd = !choice.reuse_existing_esd;
+            }
+        } else if (ev.key == Key::Left || ev.key == Key::Right) {
+            if (cur_row == 0) {
+                show_edition_modal(choice);
             }
         } else if (ev.key == Key::Back) {
             return {ScreenAction::Back, choice};
         } else if (ev.key == Key::Escape) {
             return {ScreenAction::Exit, choice};
+        }
+    }
+}
+
+ScreenAction WinstallerTui::prompt_user_account(TuiUserData& user_data, bool is_linux) {
+    term_.update_size();
+    int w = 76;
+    int h = 18;
+    int col = std::max(2, (term_.cols() - w) / 2);
+    int row = std::max(5, (term_.rows() - h) / 2);
+
+    if (is_linux) {
+        if (user_data.username == "User") {
+            user_data.username.clear();
+        } else {
+            for (char& c : user_data.username) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+        }
+        if (user_data.computer_name.empty()) {
+            user_data.computer_name = "litewin-pc";
+        }
+    }
+
+    int cur_field = 0;
+    std::string error_hint;
+
+    auto pad20 = [](const std::string& s) {
+        return s.size() < 20 ? (s + std::string(20 - s.size(), ' ')) : s.substr(0, 20);
+    };
+
+    while (true) {
+        draw_header(is_linux ? "Linux User Account Setup (Required)" : "User Account Setup");
+        term_.draw_box(row, col, w, h, is_linux ? "Linux Account & Password Setup (Required)" : "User Account Setup", true);
+
+        term_.print_at(row + 2, col + 4, AnsiTerminal::color_teal() +
+            "* Set your login username and password before installation starts." + AnsiTerminal::color_reset());
+        term_.print_at(row + 3, col + 4, AnsiTerminal::color_slate() +
+            "  (For Linux, username is lowercase and password is required for console/sudo login)" + AnsiTerminal::color_reset());
+
+        auto f_style = [&](int f) {
+            return (cur_field == f) ? (AnsiTerminal::bg_teal() + AnsiTerminal::color_bold()) : AnsiTerminal::color_cyan();
+        };
+        auto row_prefix = [&](int f) {
+            return (cur_field == f) ? (AnsiTerminal::color_teal() + AnsiTerminal::color_bold() + "> " + AnsiTerminal::color_reset()) : "  ";
+        };
+
+        std::string masked_pw(user_data.password.size(), '*');
+        std::string masked_pw2(user_data.password_confirm.size(), '*');
+
+        std::string pw_status;
+        if (user_data.password.empty()) {
+            pw_status = AnsiTerminal::color_gold() + "[Required]" + AnsiTerminal::color_reset();
+        } else if (user_data.password_matches()) {
+            pw_status = AnsiTerminal::color_green() + AnsiTerminal::color_bold() + "[OK: Matched]" + AnsiTerminal::color_reset();
+        } else {
+            pw_status = AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "[!: Mismatch]" + AnsiTerminal::color_reset();
+        }
+
+        term_.print_at(row + 5, col + 4, row_prefix(0) + "1. Username (ID)    : " + f_style(0) + "[" + pad20(user_data.username) + "]" + AnsiTerminal::color_reset());
+        term_.print_at(row + 7, col + 4, row_prefix(1) + "2. Password         : " + f_style(1) + "[" + pad20(masked_pw) + "]" + AnsiTerminal::color_reset());
+        term_.print_at(row + 9, col + 4, row_prefix(2) + "3. Confirm Password : " + f_style(2) + "[" + pad20(masked_pw2) + "]" + AnsiTerminal::color_reset() + " " + pw_status);
+        term_.print_at(row + 11, col + 4, row_prefix(3) + "4. Hostname (PC)    : " + f_style(3) + "[" + pad20(user_data.computer_name) + "]" + AnsiTerminal::color_reset());
+
+        if (!error_hint.empty()) {
+            term_.print_at(row + 13, col + 4, AnsiTerminal::color_red() + AnsiTerminal::color_bold() + "! " + error_hint + AnsiTerminal::color_reset());
+        } else {
+            term_.print_at(row + 13, col + 4, AnsiTerminal::color_slate() + "Up/Down/Tab: Move  |  Type/Backspace: Edit  |  Enter: Next/Confirm" + AnsiTerminal::color_reset());
+        }
+
+        if (cur_field == 4) {
+            term_.print_at(row + 15, col + 4, AnsiTerminal::bg_teal() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+        } else {
+            term_.print_at(row + 15, col + 4, AnsiTerminal::color_bold() + " [ Start Installation (Enter) ] " + AnsiTerminal::color_reset());
+        }
+        if (cur_field == 5) {
+            term_.print_at(row + 15, col + 40, AnsiTerminal::bg_teal() + " [ Back ] " + AnsiTerminal::color_reset());
+        } else {
+            term_.print_at(row + 15, col + 40, " [ Back ] ");
+        }
+        term_.print_at(row + 15, col + 54, " [ Exit (Esc) ] ");
+
+        auto ev = term_.read_key(-1);
+        if (ev.key == Key::Escape) {
+            return ScreenAction::Exit;
+        } else if (ev.key == Key::Up) {
+            cur_field = (cur_field + 5) % 6;
+        } else if (ev.key == Key::Down || ev.key == Key::Tab) {
+            cur_field = (cur_field + 1) % 6;
+        } else if (ev.key == Key::Enter) {
+            if (cur_field == 5) {
+                return ScreenAction::Back;
+            } else if (cur_field < 4) {
+                cur_field++;
+            } else if (cur_field == 4) {
+                if (user_data.username.empty()) {
+                    error_hint = "Username cannot be empty!";
+                    cur_field = 0;
+                } else if (is_linux && user_data.password.empty()) {
+                    error_hint = "Password is required for Linux installation!";
+                    cur_field = 1;
+                } else if (!user_data.password_matches()) {
+                    error_hint = "Passwords do not match! Please re-enter.";
+                    cur_field = 2;
+                } else {
+                    if (user_data.computer_name.empty()) {
+                        user_data.computer_name = "litewin-pc";
+                    }
+                    user_data.finalized = true;
+                    return ScreenAction::Next;
+                }
+            }
+        } else if (ev.key == Key::Backspace || ev.key == Key::Back) {
+            if (cur_field <= 3) {
+                std::string* target = (cur_field == 0) ? &user_data.username :
+                                      (cur_field == 1) ? &user_data.password :
+                                      (cur_field == 2) ? &user_data.password_confirm :
+                                                         &user_data.computer_name;
+                if (!target->empty()) {
+                    target->pop_back();
+                    error_hint.clear();
+                }
+            } else if (ev.key == Key::Back) {
+                return ScreenAction::Back;
+            }
+        } else if ((ev.key == Key::Char || ev.key == Key::Space) && cur_field <= 3) {
+            if (ev.ch >= 32 && ev.ch <= 126) {
+                std::string* target = (cur_field == 0) ? &user_data.username :
+                                      (cur_field == 1) ? &user_data.password :
+                                      (cur_field == 2) ? &user_data.password_confirm :
+                                                         &user_data.computer_name;
+                char ch = ev.ch;
+                bool valid_char = true;
+                if (cur_field == 0) {
+                    if (is_linux) {
+                        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                        bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+                        if (!ok || (target->empty() && ch == '-')) valid_char = false;
+                    } else {
+                        const std::string_view forbidden = "/\\[]:;|=,+*?<>\"";
+                        if (forbidden.find(ch) != std::string_view::npos || (target->empty() && (ch == ' ' || ch == '.'))) {
+                            valid_char = false;
+                        }
+                    }
+                } else if (cur_field == 3) {
+                    if (is_linux) {
+                        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                    }
+                    bool is_alnum = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+                    if (!is_alnum && (ch != '-' || target->empty())) {
+                        valid_char = false;
+                    }
+                }
+                const std::size_t max_len = (cur_field == 0 || cur_field == 3) ? 20 : 64;
+                if (valid_char && target->size() < max_len) {
+                    target->push_back(ch);
+                    error_hint.clear();
+                }
+            }
         }
     }
 }
@@ -523,7 +811,7 @@ void WinstallerTui::render_progress(
     int col = std::max(2, (term_.cols() - w) / 2);
 
     term_.draw_box(1, col, w, 3, "Winstaller - Deployment Active", true);
-    term_.print_at(2, col + 3, AnsiTerminal::color_bold() + AnsiTerminal::color_teal() + "✦ Windows 11 Zero-Touch Installation in Progress" + AnsiTerminal::color_reset());
+    term_.print_at(2, col + 3, AnsiTerminal::color_bold() + AnsiTerminal::color_teal() + "* OS Zero-Touch Installation in Progress" + AnsiTerminal::color_reset());
 
     // Pipeline Box
     term_.draw_box(4, col, w, 8, "Pipeline Status (" + step_name + ")", true);
@@ -646,8 +934,8 @@ bool WinstallerTui::prompt_reboot_countdown(int timeout_seconds) {
     for (int sec = timeout_seconds; sec > 0; --sec) {
         term_.fill_rect(row, col, w, h, ' ');
         term_.draw_box(row, col, w, h, "INSTALLATION COMPLETED", true);
-        term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + AnsiTerminal::color_green() + "Windows deployment and configuration finished!" + AnsiTerminal::color_reset());
-        term_.print_at(row + 3, col + 4, "Rebooting in " + AnsiTerminal::color_gold() + AnsiTerminal::color_bold() + std::to_string(sec) + " seconds" + AnsiTerminal::color_reset() + " into Windows Setup...");
+        term_.print_at(row + 2, col + 4, AnsiTerminal::color_bold() + AnsiTerminal::color_green() + "OS deployment and configuration finished!" + AnsiTerminal::color_reset());
+        term_.print_at(row + 3, col + 4, "Rebooting in " + AnsiTerminal::color_gold() + AnsiTerminal::color_bold() + std::to_string(sec) + " seconds" + AnsiTerminal::color_reset() + " into installed OS...");
         term_.print_at(row + 5, col + 4, AnsiTerminal::color_slate() + "Press ANY KEY to pause countdown and edit settings." + AnsiTerminal::color_reset());
         term_.print_at(row + 7, col + 18, AnsiTerminal::bg_teal() + " [ Reboot Now (Enter) ] " + AnsiTerminal::color_reset());
 

@@ -73,10 +73,11 @@ void AnsiTerminal::fill_rect(int row, int col, int width, int height, char ch) {
 void AnsiTerminal::draw_box(int row, int col, int width, int height, const std::string& title, bool rounded) {
     if (width < 2 || height < 2) return;
 
-    std::string tl = rounded ? "╭" : "┌";
-    std::string tr = rounded ? "╮" : "┐";
-    std::string bl = rounded ? "╰" : "└";
-    std::string br = rounded ? "╯" : "┘";
+    std::string tl = "┌";
+    std::string tr = "┐";
+    std::string bl = "└";
+    std::string br = "┘";
+    (void)rounded;
 
     // Top border
     set_cursor(row, col);

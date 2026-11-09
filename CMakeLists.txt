@@ -18,6 +18,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_library(litewin_network STATIC
         src/core/hash_verifier.cpp
         src/core/esd_catalog.cpp
+        src/core/linux_catalog.cpp
         src/core/unattend_generator.cpp
         src/platform/network_inspector.cpp
         src/platform/network_probe.cpp
@@ -30,6 +31,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/platform/wim_deployer.cpp
         src/platform/winpe_bootstrapper.cpp
         src/platform/install_pipeline.cpp
+        src/platform/linux_installer.cpp
         src/ui/ansi_terminal.cpp
         src/ui/winstaller_tui.cpp
     )
@@ -229,5 +231,19 @@ if(BUILD_TESTING)
             target_compile_options(tui_tests PRIVATE -Wall -Wextra -Wpedantic)
         endif()
         add_test(NAME "ui.tui_unit_tests" COMMAND tui_tests)
+
+        add_executable(linux_catalog_tests tests/linux_catalog_tests.cpp)
+        target_link_libraries(linux_catalog_tests PRIVATE litewin_network)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(linux_catalog_tests PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME "linux.catalog_unit_tests" COMMAND linux_catalog_tests)
+
+        add_executable(linux_installer_tests tests/linux_installer_tests.cpp)
+        target_link_libraries(linux_installer_tests PRIVATE litewin_network)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(linux_installer_tests PRIVATE -Wall -Wextra -Wpedantic)
+        endif()
+        add_test(NAME "linux.installer_unit_tests" COMMAND linux_installer_tests)
     endif()
 endif()

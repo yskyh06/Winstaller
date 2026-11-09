@@ -31,11 +31,18 @@ struct TuiEditionChoice {
     std::string edition_name = "Windows 11 Home";
     std::string language = "ko-KR";
     bool reuse_existing_esd = false;
+    bool is_linux = false;
+    std::string os_tab = "Windows";
+    std::string linux_distro_id = "";
 };
 
 class WinstallerTui {
 public:
     explicit WinstallerTui(AnsiTerminal& term);
+
+    // Multi-OS Catalog Accessors (v1.1)
+    static std::vector<std::string> get_os_tabs();
+    static std::vector<std::pair<std::string, std::string>> get_tab_os_items(const std::string& tab_name);
 
     // Modal: Full EULA & Terms of Use Popup
     void show_eula_modal();
@@ -57,6 +64,9 @@ public:
 
     // Screen 4: Windows Version & Edition Selection
     std::pair<ScreenAction, TuiEditionChoice> prompt_edition_selection(const std::string& detected_oem_edition, bool cached_esd_found);
+
+    // Screen 4.5: Mandatory User Account & Password Setup (for Linux)
+    ScreenAction prompt_user_account(TuiUserData& user_data, bool is_linux = true);
 
     // Screen 5: Live Deployment Dual-Pane View
     void render_progress(

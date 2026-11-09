@@ -1,8 +1,10 @@
 #include "core/disk_inventory.hpp"
 #include "core/disk_target.hpp"
 #include "core/esd_catalog.hpp"
+#include "core/linux_catalog.hpp"
 #include "platform/disk_inspector.hpp"
 #include "platform/install_pipeline.hpp"
+#include "platform/linux_installer.hpp"
 #include "platform/network_inspector.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/process_runner.hpp"
@@ -159,6 +161,7 @@ int main(int argc, char* argv[]) {
 
     TuiUserData user_data;
     int active_tui_field = 0;
+    TuiEditionChoice selected_choice;
 
     // Interactive TUI Flow (Streamlined 2-Screen Setup) when run in terminal
     if (!non_interactive && isatty(STDIN_FILENO)) {
@@ -178,12 +181,13 @@ int main(int argc, char* argv[]) {
 
         enum class SetupStep {
             Wifi = 0,
-            Disk = 1,
-            Edition = 2,
-            Done = 3
+            Edition = 1,
+            Disk = 2,
+            Account = 3,
+            Done = 4
         };
 
-        SetupStep current_step = initial_online ? SetupStep::Disk : SetupStep::Wifi;
+        SetupStep current_step = initial_online ? SetupStep::Edition : SetupStep::Wifi;
         std::vector<DiskInfo> eligible_disks;
         std::string chosen_disk;
 
@@ -205,6 +209,38 @@ int main(int argc, char* argv[]) {
                 } else if (act == ScreenAction::Back) {
                     reboot_and_exit();
                 } else {
+                    current_step = SetupStep::Edition;
+                }
+                break;
+            }
+            case SetupStep::Edition: {
+                std::string oem_str;
+                if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
+                    std::ifstream msdm_in("/sys/firmware/acpi/tables/MSDM", std::ios::binary);
+                    std::string msdm_raw((std::istreambuf_iterator<char>(msdm_in)), std::istreambuf_iterator<char>());
+                    if (msdm_raw.find("Pro") != std::string::npos || msdm_raw.find("PRO") != std::string::npos) {
+                        oem_str = "Windows 11 Pro";
+                    } else {
+                        oem_str = "Windows 11 Home";
+                    }
+                }
+                std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
+                auto [act, choice] = tui.prompt_edition_selection(oem_str, cached_mb > 0);
+                if (act == ScreenAction::Exit) {
+                    reboot_and_exit();
+                } else if (act == ScreenAction::Back) {
+                    current_step = SetupStep::Wifi;
+                } else {
+                    selected_choice = choice;
+                    options.image_index = choice.edition_index;
+                    options.edition_preference = choice.edition_name;
+                    options.unattend_options.language = choice.language;
+                    options.reuse_existing_esd = choice.reuse_existing_esd;
+                    if (!choice.is_linux) {
+                        if (auto matched = find_esd_target(WindowsVersion::Win11_26H2, choice.language, "x64")) {
+                            options.esd_target = *matched;
+                        }
+                    }
                     current_step = SetupStep::Disk;
                 }
                 break;
@@ -238,7 +274,7 @@ int main(int argc, char* argv[]) {
                 if (act == ScreenAction::Exit) {
                     reboot_and_exit();
                 } else if (act == ScreenAction::Back) {
-                    current_step = SetupStep::Wifi;
+                    current_step = SetupStep::Edition;
                 } else if (!disk.empty()) {
                     chosen_disk = disk;
                     options.target_disk_path = chosen_disk;
@@ -248,35 +284,17 @@ int main(int argc, char* argv[]) {
                             break;
                         }
                     }
-                    current_step = SetupStep::Edition;
+                    current_step = selected_choice.is_linux ? SetupStep::Account : SetupStep::Done;
                 }
                 break;
             }
-            case SetupStep::Edition: {
-                std::string oem_str;
-                if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
-                    std::ifstream msdm_in("/sys/firmware/acpi/tables/MSDM", std::ios::binary);
-                    std::string msdm_raw((std::istreambuf_iterator<char>(msdm_in)), std::istreambuf_iterator<char>());
-                    if (msdm_raw.find("Pro") != std::string::npos || msdm_raw.find("PRO") != std::string::npos) {
-                        oem_str = "Windows 11 Pro";
-                    } else {
-                        oem_str = "Windows 11 Home";
-                    }
-                }
-                std::uint64_t cached_mb = detect_cached_esd_mb(options.target_disk_path, options.mount_root, options.dry_run);
-                auto [act, choice] = tui.prompt_edition_selection(oem_str, cached_mb > 0);
+            case SetupStep::Account: {
+                auto act = tui.prompt_user_account(user_data, selected_choice.is_linux);
                 if (act == ScreenAction::Exit) {
                     reboot_and_exit();
                 } else if (act == ScreenAction::Back) {
                     current_step = SetupStep::Disk;
                 } else {
-                    options.image_index = choice.edition_index;
-                    options.edition_preference = choice.edition_name;
-                    options.unattend_options.language = choice.language;
-                    options.reuse_existing_esd = choice.reuse_existing_esd;
-                    if (auto matched = find_esd_target(WindowsVersion::Win11_26H2, choice.language, "x64")) {
-                        options.esd_target = *matched;
-                    }
                     current_step = SetupStep::Done;
                 }
                 break;
@@ -347,21 +365,11 @@ int main(int argc, char* argv[]) {
         if (!pipeline_tui) {
             std::cout << ">> [4/4] Executing Zero-Touch Installation Pipeline...\n";
         }
-        if (!options.dry_run) {
+        if (!options.dry_run && !selected_choice.is_linux) {
             fs::path mroot(options.mount_root);
             static_cast<void>(DiskPartitioner::unmount_partition((mroot / "p2").string(), false));
             static_cast<void>(DiskPartitioner::unmount_partition((mroot / "p4").string(), false));
             static_cast<void>(DiskPartitioner::unmount_partition((mroot / "p5").string(), false));
-            if (!options.reuse_existing_esd) {
-                for (int p = 1; p <= 5; ++p) {
-                    std::string ppath = get_partition_device_path(options.target_disk_path, p);
-                    static_cast<void>(ProcessRunner::run("wipefs", {"-a", "-f", ppath}));
-                }
-                static_cast<void>(ProcessRunner::run("sfdisk", {"--delete", options.target_disk_path}));
-                static_cast<void>(ProcessRunner::run("wipefs", {"-a", "-f", options.target_disk_path}));
-                static_cast<void>(ProcessRunner::run("partprobe", {options.target_disk_path}));
-                static_cast<void>(ProcessRunner::run("udevadm", {"settle"}));
-            }
         }
 
         std::atomic<bool> pipeline_active{true};
@@ -380,7 +388,64 @@ int main(int argc, char* argv[]) {
             });
         }
 
-        auto result = InstallPipeline::execute(options);
+        PipelineResult result;
+        std::string failed_step_label;
+        LinuxInstallOptions lopts;
+        if (selected_choice.is_linux) {
+            lopts.target_disk_path = options.target_disk_path;
+            lopts.target_disk_size = options.target_disk_size;
+            lopts.mount_root = options.mount_root + "_linux";
+            lopts.dry_run = options.dry_run;
+            std::string linux_user = user_data.username.empty() ? "user" : user_data.username;
+            std::transform(linux_user.begin(), linux_user.end(), linux_user.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            lopts.username = linux_user;
+            lopts.password = user_data.password;
+            std::string linux_host = user_data.computer_name.empty() ? "litewin-pc" : user_data.computer_name;
+            std::transform(linux_host.begin(), linux_host.end(), linux_host.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            lopts.hostname = linux_host;
+            lopts.locale = (selected_choice.language == "ko-KR" || selected_choice.language == "ko-kr") ? "ko_KR.UTF-8" : "en_US.UTF-8";
+
+            if (auto ltarget = find_linux_target_by_id(selected_choice.linux_distro_id)) {
+                lopts.download_url = ltarget->download_url;
+                lopts.expected_sha256 = ltarget->sha256_hash;
+                lopts.image_layer_paths = ltarget->image_layers;
+                lopts.kernel_source_path = ltarget->kernel_path;
+                lopts.boot_family = (ltarget->family == LinuxDistroFamily::RedHat) ? LinuxBootFamily::RedHat :
+                                    (ltarget->family == LinuxDistroFamily::Arch)   ? LinuxBootFamily::Arch :
+                                                                                     LinuxBootFamily::Debian;
+                lopts.image_format = (ltarget->extractor_mode == LinuxExtractorMode::LayeredSquashFS) ? LinuxImageFormat::LayeredSquashFS :
+                                     (ltarget->extractor_mode == LinuxExtractorMode::Erofs)           ? LinuxImageFormat::Erofs :
+                                                                                                        LinuxImageFormat::SingleSquashFS;
+
+                lopts.progress_callback = [&](LinuxPipelineStep lstep, int pct, const std::string& msg) {
+                    if (pipeline_tui) {
+                        std::lock_guard<std::mutex> lock(tui_mtx);
+                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
+                        cur_step_name = std::string(to_string(lstep));
+                        cur_step_pct = pct;
+                        cur_overall_pct = (pct * 95) / 100;
+                        cur_detail_msg = msg;
+                        pipeline_tui->render_progress(cur_step_name, cur_step_pct, cur_overall_pct, cur_detail_msg, user_data, active_tui_field);
+                    } else {
+                        std::cout << "   [" << to_string(lstep) << "] (" << pct << "%) " << msg << "\n";
+                    }
+                };
+                auto lres = LinuxInstaller::execute(lopts);
+                result.success = lres.success;
+                result.error_message = lres.error_message;
+                result.step_logs = std::move(lres.step_logs);
+                failed_step_label = std::string(to_string(lres.failed_step));
+            } else {
+                result.success = false;
+                result.error_message = "Unknown Linux distribution ID: " + selected_choice.linux_distro_id;
+                failed_step_label = "PreCheck";
+            }
+        } else {
+            result = InstallPipeline::execute(options);
+            failed_step_label = std::string(to_string(result.failed_step));
+        }
         pipeline_active.store(false);
         if (input_thread.joinable()) {
             input_thread.join();
@@ -408,25 +473,47 @@ int main(int argc, char* argv[]) {
                 }
                 sync_user_data_to_options();
                 if (!options.dry_run) {
-                    fs::path p4_dir = fs::path(options.mount_root) / "p4";
-                    std::string p4_path = get_partition_device_path(options.target_disk_path, 4);
-                    auto mnt = DiskPartitioner::mount_partition(p4_path, p4_dir.string(), "ntfs", false);
-                    if (mnt.success) {
-                        std::error_code ec;
-                        fs::path panther_dir = p4_dir / "Windows" / "Panther";
-                        fs::create_directories(panther_dir, ec);
-                        std::ofstream unattend_file(panther_dir / "unattend.xml");
-                        if (unattend_file) {
-                            unattend_file << UnattendGenerator::generate_xml(options.unattend_options);
+                    if (selected_choice.is_linux) {
+                        std::string updated_user = options.unattend_options.username;
+                        std::transform(updated_user.begin(), updated_user.end(), updated_user.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                        lopts.username = updated_user;
+                        lopts.password = options.unattend_options.password;
+                        if (!options.unattend_options.computer_name.empty()) {
+                            std::string updated_host = options.unattend_options.computer_name;
+                            std::transform(updated_host.begin(), updated_host.end(), updated_host.begin(),
+                                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            lopts.hostname = updated_host;
                         }
-                        static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), false));
+                        static_cast<void>(LinuxInstaller::update_installed_user_credentials(lopts));
+                    } else {
+                        fs::path p4_dir = fs::path(options.mount_root) / "p4";
+                        std::string p4_path = get_partition_device_path(options.target_disk_path, 4);
+                        auto mnt = DiskPartitioner::mount_partition(p4_path, p4_dir.string(), "ntfs", false);
+                        if (mnt.success) {
+                            std::error_code ec;
+                            fs::path panther_dir = p4_dir / "Windows" / "Panther";
+                            fs::create_directories(panther_dir, ec);
+                            std::ofstream unattend_file(panther_dir / "unattend.xml");
+                            if (unattend_file) {
+                                unattend_file << UnattendGenerator::generate_xml(options.unattend_options);
+                            }
+                            static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), false));
+                        }
                     }
                 }
             } else {
-                std::cout << "\n===============================================================\n"
-                          << ">> [SUCCESS] Windows 11 successfully installed onto " << options.target_disk_path << "!\n"
-                          << "   WinPE staged on ESP. Next reboot will run bcdboot.\n"
-                          << "===============================================================\n\n";
+                if (selected_choice.is_linux) {
+                    std::cout << "\n===============================================================\n"
+                              << ">> [SUCCESS] " << selected_choice.edition_name << " successfully installed onto " << options.target_disk_path << "!\n"
+                              << "   UEFI GRUB bootloader registered. Ready to reboot.\n"
+                              << "===============================================================\n\n";
+                } else {
+                    std::cout << "\n===============================================================\n"
+                              << ">> [SUCCESS] Windows 11 successfully installed onto " << options.target_disk_path << "!\n"
+                              << "   WinPE staged on ESP. Next reboot will run bcdboot.\n"
+                              << "===============================================================\n\n";
+                }
             }
 
             if (!options.dry_run) {
@@ -444,7 +531,7 @@ int main(int argc, char* argv[]) {
             int row = std::max(4, (pipeline_term->rows() - h) / 2);
             pipeline_term->draw_box(row, col, w, h, "INSTALLATION FAILED", true);
             pipeline_term->print_at(row + 2, col + 4, AnsiTerminal::color_bold() + AnsiTerminal::color_red() +
-                                    "Failed at step: " + std::string(to_string(result.failed_step)) + AnsiTerminal::color_reset());
+                                    "Failed at step: " + failed_step_label + AnsiTerminal::color_reset());
             std::string err_line = result.error_message.substr(0, w - 8);
             pipeline_term->print_at(row + 4, col + 4, err_line);
             pipeline_term->print_at(row + 6, col + 4, AnsiTerminal::color_slate() + "Press Enter to Retry, or Esc to Reboot..." + AnsiTerminal::color_reset());
@@ -465,7 +552,7 @@ int main(int argc, char* argv[]) {
                 }
             }
         } else {
-            std::cerr << ">> [FAILED] Installation stopped at " << to_string(result.failed_step) << "!\n"
+            std::cerr << ">> [FAILED] Installation stopped at " << failed_step_label << "!\n"
                       << "   Error: " << result.error_message << "\n"
                       << "===============================================================\n";
 
@@ -488,7 +575,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        prompt_cache_and_wipe_mode(options, non_interactive);
+        if (!selected_choice.is_linux) {
+            prompt_cache_and_wipe_mode(options, non_interactive);
+        }
         if (!confirm_disk_formatting(options, non_interactive)) {
             std::cout << "   Retry cancelled by user. Rebooting system...\n";
             if (!options.dry_run) {
