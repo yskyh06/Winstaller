@@ -12,11 +12,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(winstaller_boot src/platform/boot_progress.cpp)
+    target_compile_features(winstaller_boot PRIVATE cxx_std_20)
+    set_target_properties(winstaller_boot PROPERTIES OUTPUT_NAME "winstaller-boot")
     find_package(CURL REQUIRED)
     find_package(OpenSSL REQUIRED)
 
     add_library(litewin_network STATIC
         src/core/hash_verifier.cpp
+        src/core/update_protocol.cpp
+        src/platform/update_transport.cpp
+        src/platform/update_store.cpp
+        src/platform/update_media.cpp
+        src/platform/update_service.cpp
         src/core/esd_catalog.cpp
         src/core/linux_catalog.cpp
         src/core/unattend_generator.cpp
@@ -33,6 +41,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/platform/install_pipeline.cpp
         src/platform/linux_installer.cpp
         src/ui/ansi_terminal.cpp
+        src/ui/console_mouse.cpp
         src/ui/winstaller_tui.cpp
     )
     target_link_libraries(litewin_network PUBLIC CURL::libcurl OpenSSL::Crypto)
@@ -43,6 +52,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(litewin_network PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+    add_executable(validate_update examples/validate_update.cpp)
+    target_link_libraries(validate_update PRIVATE litewin_network)
     add_executable(inspect_network examples/inspect_network.cpp)
     target_link_libraries(inspect_network PRIVATE litewin_network)
     add_executable(probe_internet examples/probe_internet.cpp)
@@ -55,6 +66,11 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME usb.image_safety COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/usb_image_tests.py")
+        set_tests_properties(usb.image_safety PROPERTIES TIMEOUT 20)
+    endif()
     add_executable(disk_inventory_tests tests/disk_inventory_tests.cpp)
     target_link_libraries(disk_inventory_tests PRIVATE litewin_inventory)
     target_compile_definitions(disk_inventory_tests PRIVATE
@@ -231,6 +247,13 @@ if(BUILD_TESTING)
             target_compile_options(tui_tests PRIVATE -Wall -Wextra -Wpedantic)
         endif()
         add_test(NAME "ui.tui_unit_tests" COMMAND tui_tests)
+        set_tests_properties(ui.tui_unit_tests PROPERTIES TIMEOUT 30)
+        foreach(ui_test IN ITEMS console_mouse tui_layout terminal_input mouse_controls)
+            add_executable(${ui_test}_tests tests/${ui_test}_tests.cpp)
+            target_link_libraries(${ui_test}_tests PRIVATE litewin_network litewin_inventory)
+            add_test(NAME "ui.${ui_test}" COMMAND ${ui_test}_tests)
+            set_tests_properties("ui.${ui_test}" PROPERTIES TIMEOUT 20)
+        endforeach()
 
         add_executable(linux_catalog_tests tests/linux_catalog_tests.cpp)
         target_link_libraries(linux_catalog_tests PRIVATE litewin_network)
@@ -246,4 +269,38 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME "linux.installer_unit_tests" COMMAND linux_installer_tests)
     endif()
+endif()
+
+if(BUILD_TESTING AND TARGET litewin_network)
+    foreach(module IN ITEMS download_status windows_compatibility windows_settings download_settings_integration)
+        add_executable(${module}_tests tests/${module}_tests.cpp)
+        target_link_libraries(${module}_tests PRIVATE litewin_network)
+        add_test(NAME settings.${module} COMMAND ${module}_tests)
+        set_tests_properties(settings.${module} PROPERTIES TIMEOUT 20)
+    endforeach()
+endif()
+
+if(BUILD_TESTING AND TARGET download_settings_integration_tests AND Python3_Interpreter_FOUND)
+    add_test(NAME settings.download_reporting COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/download_reporting_tests.py" "$<TARGET_FILE:download_settings_integration_tests>")
+    set_tests_properties(settings.download_reporting PROPERTIES TIMEOUT 30)
+endif()
+
+if(BUILD_TESTING AND TARGET winstaller_boot AND Python3_Interpreter_FOUND)
+    add_test(NAME boot.progress COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/boot_progress_tests.py" "$<TARGET_FILE:winstaller_boot>")
+    set_tests_properties(boot.progress PROPERTIES TIMEOUT 20)
+endif()
+
+if(BUILD_TESTING AND TARGET litewin_network)
+    add_executable(update_lab tests/update_lab.cpp)
+    target_link_libraries(update_lab PRIVATE litewin_network)
+    add_executable(update_system_tests tests/update_system_tests.cpp)
+    target_link_libraries(update_system_tests PRIVATE litewin_network)
+    target_include_directories(update_system_tests SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+    foreach(scenario IN ITEMS signatures catalog_validation urls release_validation service ui_catalog ui_late_catalog catalog_linux image_selection slots_commit slots_power_cut slots_resume slots_checksum slots_cancel slots_symlink)
+        add_test(NAME updates.${scenario} COMMAND update_system_tests ${scenario})
+        set_tests_properties(updates.${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
+endif()
+if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+    add_test(NAME updates.usb_layout COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_usb_layout_tests.py")
 endif()

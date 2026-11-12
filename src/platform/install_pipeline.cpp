@@ -1,4 +1,5 @@
 #include "platform/install_pipeline.hpp"
+#include "platform/update_media.hpp"
 #include "core/hash_verifier.hpp"
 
 #include <filesystem>
@@ -53,6 +54,11 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
         return result;
     }
 
+    if(!options.dry_run && boot_target_status(options.target_disk_path)!=BootTargetStatus::Allowed) {
+        result.failed_step=PipelineStep::PreCheck;
+        result.error_message="The boot medium is protected, or its identity is unavailable. Reboot with the original medium connected.";
+        return result;
+    }
     DiskInfo candidate;
     candidate.path = options.target_disk_path;
     candidate.size_bytes = options.target_disk_size;
@@ -206,28 +212,43 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
     // Step 4: AcquireImage
     // -------------------------------------------------------------
     log_progress(options, result, PipelineStep::AcquireImage, 40, "Acquiring Windows ESD image...");
-    std::string esd_file = (p5_dir / "install.esd").string();
+    std::string esd_file = (p5_dir / (options.strict_image_selector ? "image-"+options.esd_target.sha256_hash+".esd" : "install.esd")).string();
+    bool used_cached_esd = false;
 
     if (!options.custom_esd_path.empty()) {
         esd_file = options.custom_esd_path;
         log_progress(options, result, PipelineStep::AcquireImage, 50, "Using custom/cached ESD: " + esd_file);
     } else if (options.reuse_existing_esd && fs::exists(esd_file, ec) && fs::file_size(esd_file, ec) > 100ULL * 1024 * 1024) {
+        used_cached_esd = true;
         auto mb = fs::file_size(esd_file, ec) / (1024 * 1024);
         log_progress(options, result, PipelineStep::AcquireImage, 50, "Verifying cached ESD on P5 (" + std::to_string(mb) + " MB): " + esd_file);
+        DownloadStatus cached_status;
+        cached_status.phase = DownloadPhase::Verifying;
+        cached_status.transport = DownloadTransport::Local;
+        cached_status.hash = options.esd_target.sha256_hash.empty() ? DownloadHash::NotProvided : DownloadHash::Verifying;
+        cached_status.downloaded_bytes = fs::file_size(esd_file, ec);
+        cached_status.total_bytes = cached_status.downloaded_bytes;
+        if (options.download_status_callback) options.download_status_callback(cached_status);
         if (!options.dry_run && !options.esd_target.sha256_hash.empty() &&
             !verify_file_sha256(esd_file, options.esd_target.sha256_hash)) {
             result.failed_step = PipelineStep::AcquireImage;
             result.error_message = "Cached ESD on P5 failed SHA-256 verification. Please disable cache reuse and retry.";
+            cached_status.phase = DownloadPhase::Failed;
+            cached_status.hash = DownloadHash::Mismatch;
+            if (options.download_status_callback) options.download_status_callback(cached_status);
             return result;
         }
         log_progress(options, result, PipelineStep::AcquireImage, 52, "Reusing verified ESD on P5 (" + std::to_string(mb) + " MB): " + esd_file);
     } else if (options.dry_run) {
-        log_progress(options, result, PipelineStep::AcquireImage, 50, "Simulated download from " + options.esd_target.download_url);
+        log_progress(options, result, PipelineStep::AcquireImage, 50, "Simulated download from " + sanitize_download_host(options.esd_target.download_url));
     } else {
         DownloadOptions dl_opt;
         dl_opt.url = options.esd_target.download_url;
         dl_opt.destination_path = esd_file;
         dl_opt.expected_sha256 = options.esd_target.sha256_hash;
+        dl_opt.strict_official_source=options.strict_image_selector;
+        dl_opt.expected_size=options.esd_target.size_bytes;
+        dl_opt.status_callback = options.download_status_callback;
 
         int last_reported_pct = -1;
         dl_opt.progress_callback = [&](std::uint64_t dlnow, std::uint64_t dltotal) -> bool {
@@ -255,6 +276,22 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
         }
     }
 
+    if(options.strict_image_selector && !options.dry_run &&
+       (!verify_file_sha256(esd_file,options.esd_target.sha256_hash) || fs::file_size(esd_file)!=options.esd_target.size_bytes)) {
+        result.failed_step=PipelineStep::AcquireImage;result.error_message="Selected image differs from the signed catalog";return result;
+    }
+    if (options.download_status_callback && (!options.custom_esd_path.empty() || used_cached_esd || options.dry_run)) {
+        DownloadStatus cached;
+        cached.phase = DownloadPhase::Cached;
+        cached.transport = DownloadTransport::Local;
+        if (!options.dry_run) {
+            cached.downloaded_bytes = fs::file_size(esd_file, ec);
+            if (ec) cached.downloaded_bytes = 0;
+            cached.total_bytes = cached.downloaded_bytes;
+        }
+        cached.hash = (!options.dry_run && used_cached_esd && options.custom_esd_path.empty() && !options.esd_target.sha256_hash.empty()) ? DownloadHash::Matched : DownloadHash::NotProvided;
+        options.download_status_callback(cached);
+    }
     result.last_completed_step = PipelineStep::AcquireImage;
     log_progress(options, result, PipelineStep::AcquireImage, 55, "Windows ESD image verified and staged on P5");
 
@@ -281,7 +318,13 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
 
         // Auto-resolve OS edition index in Full Microsoft ESD (where Index 1-3 are Setup/WinPE and Index 4+ are OS editions)
         auto images = WimDeployer::get_image_info(esd_file);
-        if (images.size() >= 4) {
+        if(options.strict_image_selector) {
+            auto exact=WimDeployer::resolve_exact_image(images,options.edition_preference);
+            if(!exact) {
+                result.failed_step=PipelineStep::DeployWindows;result.error_message="The signed image name or x64 architecture did not match; installation stopped";return result;
+            }
+            resolved_index=exact->index;resolved_name=exact->name;
+        } else if (images.size() >= 4) {
             int matched_idx = -1;
             // Pass 1: exact name match (e.g. "Windows 11 Home" or "Windows 11 Pro")
             for (const auto& img : images) {
@@ -432,6 +475,7 @@ PipelineResult InstallPipeline::execute(const PipelineOptions& options) {
         : options.unattend_options.language;
     boot_opt.disk_device = options.target_disk_path;
     boot_opt.dry_run = options.dry_run;
+    boot_opt.strict_image_selector=options.strict_image_selector;
 
     auto boot_res = WinpeBootstrapper::bootstrap(boot_opt);
     if (!boot_res.success && !options.dry_run) {

@@ -1,0 +1,13 @@
+[Unit]
+Description=Winstaller boot progress display
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=network-pre.target litewin.service
+ConditionPathExists=/run/winstaller-boot/enabled
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/winstaller-boot --resume
+ExecStart=/usr/local/bin/winstaller-boot --serve
+StandardOutput=journal
+StandardError=journal

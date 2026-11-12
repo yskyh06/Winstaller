@@ -4,10 +4,14 @@
 #include "core/linux_catalog.hpp"
 #include "platform/disk_inspector.hpp"
 #include "platform/install_pipeline.hpp"
+#include "platform/windows_compatibility.hpp"
+#include "platform/configuration_writer.hpp"
 #include "platform/linux_installer.hpp"
 #include "platform/network_inspector.hpp"
 #include "platform/network_probe.hpp"
 #include "platform/process_runner.hpp"
+#include "platform/update_service.hpp"
+#include "platform/update_media.hpp"
 #include "ui/ansi_terminal.hpp"
 #include "ui/winstaller_tui.hpp"
 
@@ -165,9 +169,14 @@ int main(int argc, char* argv[]) {
 
     // Interactive TUI Flow (Streamlined 2-Screen Setup) when run in terminal
     if (!non_interactive && isatty(STDIN_FILENO)) {
-        AnsiTerminal term;
-        WinstallerTui tui(term);
-
+        const bool boot_progress = fs::exists("/run/winstaller-boot/enabled") &&
+                                   fs::exists("/usr/local/bin/winstaller-boot");
+        auto report_boot = [&](int percent, const std::string& message) {
+            if (boot_progress) static_cast<void>(ProcessRunner::run("/usr/local/bin/winstaller-boot",
+                {"--state", std::to_string(percent), message}));
+        };
+        report_boot(95, "Initializing the installer");
+        report_boot(97, "Checking network connectivity");
         // Pre-check network: if online via Ethernet or Wi-Fi, bypass Wi-Fi setup screen
         bool initial_online = false;
         auto inv_res = inspect_network_interfaces();
@@ -178,6 +187,17 @@ int main(int argc, char* argv[]) {
             auto probe = probe_internet(default_internet_probe_targets(), true);
             initial_online = probe.is_online;
         }
+
+        report_boot(99, "Preparing the installation screen");
+        if (boot_progress) static_cast<void>(ProcessRunner::run("/usr/local/bin/winstaller-boot", {"--handoff"}));
+        AnsiTerminal term;
+        WinstallerTui tui(term);
+        UpdateConfig update_config;
+        try {update_config=UpdateConfig::load();}catch(const std::exception&){}
+        UpdateService updates(std::move(update_config));
+        tui.configure_updates(&updates);
+        updates.check();
+        if (boot_progress) static_cast<void>(ProcessRunner::run("/usr/local/bin/winstaller-boot", {"--ready"}));
 
         enum class SetupStep {
             Wifi = 0,
@@ -214,6 +234,7 @@ int main(int argc, char* argv[]) {
                 break;
             }
             case SetupStep::Edition: {
+                updates.check();
                 std::string oem_str;
                 if (fs::exists("/sys/firmware/acpi/tables/MSDM")) {
                     std::ifstream msdm_in("/sys/firmware/acpi/tables/MSDM", std::ios::binary);
@@ -236,7 +257,11 @@ int main(int argc, char* argv[]) {
                     options.edition_preference = choice.edition_name;
                     options.unattend_options.language = choice.language;
                     options.reuse_existing_esd = choice.reuse_existing_esd;
-                    if (!choice.is_linux) {
+                    options.strict_image_selector=choice.remote_target.has_value();
+                    if(choice.remote_target && choice.remote_target->windows) {
+                        options.esd_target=choice.remote_target->esd;
+                        options.edition_preference=choice.remote_target->image_name;
+                    } else if (!choice.is_linux) {
                         if (auto matched = find_esd_target(WindowsVersion::Win11_26H2, choice.language, "x64")) {
                             options.esd_target = *matched;
                         }
@@ -251,6 +276,7 @@ int main(int argc, char* argv[]) {
                 if (std::holds_alternative<DiskInventory>(inv_res)) {
                     const auto& disks = std::get<DiskInventory>(inv_res);
                     for (const auto& d : disks) {
+                        if(!options.dry_run && boot_target_status(d.path)!=BootTargetStatus::Allowed)continue;
                         auto eval = evaluate_disk_target(d);
                         if (eval.is_eligible ||
                             eval.rejection_reason == DiskRejectionReason::has_partitions ||
@@ -337,19 +363,26 @@ int main(int argc, char* argv[]) {
     int cur_overall_pct = 0;
     std::string cur_detail_msg = "Initializing installation pipeline...";
 
-    auto sync_user_data_to_options = [&]() {
-        options.unattend_options.username = user_data.username.empty() ? "User" : user_data.username;
-        if (user_data.password_matches()) {
-            options.unattend_options.password = user_data.password;
-        }
-        options.unattend_options.computer_name = user_data.computer_name;
+    // Freeze Linux input before starting any worker. Windows drafts never mutate pipeline options.
+    const TuiUserData frozen_linux_user = user_data;
+    const auto compatibility = inspect_windows_compatibility();
+    options.unattend_options.bypass_tpm_secureboot = false;
+    options.unattend_options.bypass_tpm = compatibility.bypass_tpm();
+    options.unattend_options.bypass_secure_boot = compatibility.bypass_secure_boot();
+    WindowsSettingsSession windows_settings(options.unattend_options);
+    if (pipeline_tui) pipeline_tui->configure_progress(selected_choice.is_linux ? nullptr : &windows_settings,
+                "TPM: " + to_string(compatibility.tpm) + " | Secure Boot: " + to_string(compatibility.secure_boot) +
+                (compatibility.secure_boot_enabled.has_value() ? (*compatibility.secure_boot_enabled ? " (on)" : " (off, capable)") : ""));
+    options.download_status_callback = [&](const DownloadStatus& status) {
+        if (!pipeline_tui) return;
+        std::lock_guard<std::mutex> lock(tui_mtx);
+        pipeline_tui->set_download_status(status);
+        pipeline_tui->render_progress(cur_step_name, cur_step_pct, cur_overall_pct, cur_detail_msg, user_data, active_tui_field);
     };
 
     options.progress_callback = [&](PipelineStep step, int pct, const std::string& msg) {
         if (pipeline_tui) {
             std::lock_guard<std::mutex> lock(tui_mtx);
-            pipeline_tui->handle_user_data_input(user_data, active_tui_field);
-            sync_user_data_to_options();
 
             cur_step_name = std::string(to_string(step));
             cur_step_pct = pct;
@@ -372,6 +405,14 @@ int main(int argc, char* argv[]) {
             static_cast<void>(DiskPartitioner::unmount_partition((mroot / "p5").string(), false));
         }
 
+        windows_settings.reset_for_retry();
+        options.unattend_options = windows_settings.effective();
+        if (pipeline_tui) {
+            pipeline_tui->configure_progress(selected_choice.is_linux ? nullptr : &windows_settings,
+                "TPM: " + to_string(compatibility.tpm) + " | Secure Boot: " + to_string(compatibility.secure_boot) +
+                (compatibility.secure_boot_enabled.has_value() ? (*compatibility.secure_boot_enabled ? " (on)" : " (off, capable)") : ""));
+            pipeline_tui->set_download_status(DownloadStatus{});
+        }
         std::atomic<bool> pipeline_active{true};
         std::thread input_thread;
         if (pipeline_tui) {
@@ -396,18 +437,22 @@ int main(int argc, char* argv[]) {
             lopts.target_disk_size = options.target_disk_size;
             lopts.mount_root = options.mount_root + "_linux";
             lopts.dry_run = options.dry_run;
-            std::string linux_user = user_data.username.empty() ? "user" : user_data.username;
+            lopts.download_status_callback = options.download_status_callback;
+            std::string linux_user = frozen_linux_user.username.empty() ? "user" : frozen_linux_user.username;
             std::transform(linux_user.begin(), linux_user.end(), linux_user.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             lopts.username = linux_user;
-            lopts.password = user_data.password;
-            std::string linux_host = user_data.computer_name.empty() ? "litewin-pc" : user_data.computer_name;
+            lopts.password = frozen_linux_user.password;
+            std::string linux_host = frozen_linux_user.computer_name.empty() ? "litewin-pc" : frozen_linux_user.computer_name;
             std::transform(linux_host.begin(), linux_host.end(), linux_host.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             lopts.hostname = linux_host;
             lopts.locale = (selected_choice.language == "ko-KR" || selected_choice.language == "ko-kr") ? "ko_KR.UTF-8" : "en_US.UTF-8";
 
-            if (auto ltarget = find_linux_target_by_id(selected_choice.linux_distro_id)) {
+            auto frozen_linux=selected_choice.remote_target?std::optional<LinuxTarget>(selected_choice.remote_target->linux_target):find_linux_target_by_id(selected_choice.linux_distro_id);
+            if (auto ltarget = frozen_linux) {
+                lopts.strict_official_source=selected_choice.remote_target.has_value();
+                lopts.expected_size=ltarget->size_bytes;
                 lopts.download_url = ltarget->download_url;
                 lopts.expected_sha256 = ltarget->sha256_hash;
                 lopts.image_layer_paths = ltarget->image_layers;
@@ -422,7 +467,6 @@ int main(int argc, char* argv[]) {
                 lopts.progress_callback = [&](LinuxPipelineStep lstep, int pct, const std::string& msg) {
                     if (pipeline_tui) {
                         std::lock_guard<std::mutex> lock(tui_mtx);
-                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
                         cur_step_name = std::string(to_string(lstep));
                         cur_step_pct = pct;
                         cur_overall_pct = (pct * 95) / 100;
@@ -453,52 +497,42 @@ int main(int argc, char* argv[]) {
 
         if (result.success) {
             if (pipeline_tui) {
-                while (true) {
-                    while (!user_data.password_matches()) {
-                        pipeline_tui->render_progress("Complete", 100, 100, "Password mismatch! Please match passwords and press Enter.", user_data, active_tui_field);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
-                    }
-                    bool auto_reboot = pipeline_tui->prompt_reboot_countdown(10);
-                    if (auto_reboot) {
-                        break;
-                    }
-                    user_data.finalized = false;
-                    while (!user_data.finalized || !user_data.password_matches()) {
-                        pipeline_tui->render_progress("Complete", 100, 100, "Editing user settings. Press Enter on field 4 to save & reboot.", user_data, active_tui_field);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                        pipeline_tui->handle_user_data_input(user_data, active_tui_field);
-                    }
-                    break;
-                }
-                sync_user_data_to_options();
-                if (!options.dry_run) {
-                    if (selected_choice.is_linux) {
-                        std::string updated_user = options.unattend_options.username;
-                        std::transform(updated_user.begin(), updated_user.end(), updated_user.begin(),
-                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                        lopts.username = updated_user;
-                        lopts.password = options.unattend_options.password;
-                        if (!options.unattend_options.computer_name.empty()) {
-                            std::string updated_host = options.unattend_options.computer_name;
-                            std::transform(updated_host.begin(), updated_host.end(), updated_host.begin(),
-                                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                            lopts.hostname = updated_host;
+                if (selected_choice.is_linux) {
+                    pipeline_tui->prompt_reboot_countdown(10);
+                } else {
+                    windows_settings.begin_completion(WindowsSettingsSession::Clock::now(), 10);
+                    int last_remaining = -1;
+                    bool redraw = true;
+                    while (windows_settings.poll_completion(WindowsSettingsSession::Clock::now()) == SettingsDecision::Pending) {
+                        const auto now = WindowsSettingsSession::Clock::now();
+                        const int remaining = windows_settings.remaining_seconds(now);
+                        if (redraw || remaining != last_remaining) {
+                            pipeline_tui->render_progress("Complete", 100, 100,
+                                "Image deployment and boot preparation finished.", user_data, active_tui_field);
+                            last_remaining = remaining;
                         }
-                        static_cast<void>(LinuxInstaller::update_installed_user_credentials(lopts));
-                    } else {
-                        fs::path p4_dir = fs::path(options.mount_root) / "p4";
-                        std::string p4_path = get_partition_device_path(options.target_disk_path, 4);
-                        auto mnt = DiskPartitioner::mount_partition(p4_path, p4_dir.string(), "ntfs", false);
-                        if (mnt.success) {
-                            std::error_code ec;
-                            fs::path panther_dir = p4_dir / "Windows" / "Panther";
-                            fs::create_directories(panther_dir, ec);
-                            std::ofstream unattend_file(panther_dir / "unattend.xml");
-                            if (unattend_file) {
-                                unattend_file << UnattendGenerator::generate_xml(options.unattend_options);
-                            }
-                            static_cast<void>(DiskPartitioner::unmount_partition(p4_dir.string(), false));
+                        redraw = pipeline_tui->handle_user_data_input(user_data, active_tui_field);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    }
+                    const auto final_options = windows_settings.effective();
+                    if (!options.dry_run) {
+                        const auto p4_dir = fs::path(options.mount_root) / "p4";
+                        const auto p4_path = get_partition_device_path(options.target_disk_path, 4);
+                        const auto mounted = DiskPartitioner::mount_partition(p4_path, p4_dir.string(), "ntfs", false);
+                        bool configured = mounted.success;
+                        if (configured) {
+                            configured = write_final_unattend(p4_dir, final_options);
+                            const auto unmounted = DiskPartitioner::unmount_partition(p4_dir.string(), false);
+                            configured = unmounted.success && configured;
+                        }
+                        if (!configured) {
+                            pipeline_term->clear();
+                            std::cerr << "Final Windows configuration could not be committed. Automatic reboot is blocked.\n"
+                                      << "The installation was preserved; do not retry disk formatting to fix this error.\n";
+                            // Keep the failure visible. Exiting does not call reboot or rerun the pipeline.
+                            pipeline_term->print_at(3, 2, "Configuration write failed. Reboot blocked. Press Enter to exit.");
+                            while (pipeline_term->read_key(100).key != Key::Enter) {}
+                            return 1;
                         }
                     }
                 }

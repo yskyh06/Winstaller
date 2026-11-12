@@ -27,9 +27,9 @@ void test_default_unattend_xml() {
     assert(xml.find("TailoredExperiencesWithDiagnosticDataEnabled") != std::string::npos);
 
     // Bypasses & security
-    assert(xml.find("BypassTPMCheck") != std::string::npos);
-    assert(xml.find("AllowUpgradesWithUnsupportedTPMOrCPU") != std::string::npos);
-    assert(xml.find("UnsupportedHardwareNotificationCache") != std::string::npos);
+    assert(xml.find("BypassTPMCheck") == std::string::npos);
+    assert(xml.find("AllowUpgradesWithUnsupportedTPMOrCPU") == std::string::npos);
+    assert(xml.find("UnsupportedHardwareNotificationCache") == std::string::npos);
     assert(xml.find("BypassNRO") != std::string::npos);
     assert(xml.find("DisableZAU") != std::string::npos);
     assert(xml.find("PreventDeviceEncryption") != std::string::npos); // BitLocker

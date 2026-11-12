@@ -1,0 +1,9 @@
+[Unit]
+Description=Report Winstaller service readiness
+After=network.target systemd-networkd.service NetworkManager.service dhcpcd.service iwd.service
+Before=litewin.service
+ConditionPathExists=/run/winstaller-boot/enabled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/winstaller-boot --state 94 "Starting installer"

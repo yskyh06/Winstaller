@@ -13,6 +13,7 @@ struct WinpeBootstrapOptions {
     int esp_partition_number = 2;
     int temp_partition_number = 5;
     bool dry_run = false;
+    bool strict_image_selector = false;
     std::string esd_source_path = "";
     std::string locale = "ko-kr";
 };

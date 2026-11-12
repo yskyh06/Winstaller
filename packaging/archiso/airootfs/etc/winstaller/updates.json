@@ -1,0 +1,17 @@
+{
+  "catalog_url": "https://raw.githubusercontent.com/yskyh06/Winstaller/catalog/catalog-v1.signed.json",
+  "release_url": "https://raw.githubusercontent.com/yskyh06/Winstaller/catalog/updates/stable-v1.signed.json",
+  "release_sequence": 1,
+  "keys": [
+    {
+      "id": "catalog-key-1",
+      "public_hex": "4a0b9e8aa59e263f43499fbb25eeb71b470b2440d1bf9df7005897db8a1af6ed",
+      "roles": ["catalog"]
+    },
+    {
+      "id": "release-key-1",
+      "public_hex": "814e224ca493139c0169530505e543121690a9048840c4e771fd10e6c7e253e1",
+      "roles": ["release"]
+    }
+  ]
+}

@@ -46,6 +46,10 @@ std::vector<WimImageInfo> WimDeployer::parse_info_output(const std::string& info
             if (line.rfind("Name:", 0) == 0) {
                 current.name = line.substr(5);
                 trim(current.name);
+            } else if(line.rfind("Installation Type:",0)==0) {
+                current.installation_type=line.substr(18);trim(current.installation_type);
+            } else if (line.rfind("Architecture:",0)==0) {
+                current.architecture=line.substr(13);trim(current.architecture);
             } else if (line.rfind("Description:", 0) == 0) {
                 current.description = line.substr(12);
                 trim(current.description);
@@ -66,6 +70,15 @@ std::vector<WimImageInfo> WimDeployer::parse_info_output(const std::string& info
     }
 
     return results;
+}
+
+std::optional<WimImageInfo> WimDeployer::resolve_exact_image(const std::vector<WimImageInfo>& images,const std::string& name) {
+    std::optional<WimImageInfo> result;
+    for(const auto& image:images)if(image.name==name) {
+        if(result || image.index<1 || image.architecture!="x86_64")return {};
+        result=image;
+    }
+    return result;
 }
 
 std::vector<WimImageInfo> WimDeployer::get_image_info(

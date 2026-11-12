@@ -23,6 +23,7 @@ _deps/
 *.wim
 *.img
 *.qcow2
+*.raw
 *.part
 SHA256SUMS
 
@@ -31,6 +32,14 @@ SHA256SUMS
 *.tmp
 *.swp
 *~
+
+# Python caches and local signing credentials
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.p12
+*.pfx
 
 # IDE 및 에디터 설정
 .vscode/

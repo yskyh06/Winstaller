@@ -1,4 +1,5 @@
 #include "platform/winpe_bootstrapper.hpp"
+#include "platform/wim_deployer.hpp"
 #include "platform/process_runner.hpp"
 
 #include <filesystem>
@@ -151,6 +152,12 @@ WinpeBootstrapResult WinpeBootstrapper::bootstrap(const WinpeBootstrapOptions& o
         winre_path = find_case_insensitive(win_dir, {"Recovery", "WindowsRE", "winre.wim"});
     }
 
+    if(options.strict_image_selector && !options.dry_run) {
+        auto images=WimDeployer::get_image_info(winre_path.string());
+        if(images.size()!=1 || images.front().architecture!="x86_64" || images.front().installation_type!="WindowsPE") {
+            result.error_message="The selected image does not contain a compatible x64 WinRE environment";return result;
+        }
+    }
     fs::path temp_dir(options.temp_mount_dir);
     if (!fs::exists(temp_dir)) {
         result.error_message = "Temp mount dir does not exist: " + options.temp_mount_dir;
@@ -164,10 +171,10 @@ WinpeBootstrapResult WinpeBootstrapper::bootstrap(const WinpeBootstrapOptions& o
     try {
         fs::create_directories(temp_sources);
         if (!winre_path.empty() && fs::exists(winre_path)) {
-            if (!fs::exists(target_boot_wim)) {
+            if (options.strict_image_selector || !fs::exists(target_boot_wim)) {
                 fs::copy_file(winre_path, target_boot_wim, fs::copy_options::overwrite_existing);
             }
-        } else if (!options.dry_run && fs::exists(esd_fallback)) {
+        } else if (!options.dry_run && !options.strict_image_selector && fs::exists(esd_fallback)) {
             // Fallback: Export Index 2 (Microsoft Windows PE) directly from Full ESD
             auto exp_proc = ProcessRunner::run("wimlib-imagex", {
                 "export", esd_fallback.string(), "2", target_boot_wim.string(), "--boot"

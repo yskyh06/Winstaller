@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+build() {
+    add_binary /usr/bin/blkid || return 1
+    add_binary /usr/local/bin/winstaller-boot || return 1
+    add_file /etc/winstaller-version
+    add_runscript
+    add_file /usr/local/share/winstaller/archiso /hooks/archiso 755 || return 1
+    # Keep every original rescue-shell call visible on tty1.
+    if ! grep -q '^launch_interactive_shell() {' "$BUILDROOT/init_functions"; then
+        error 'mkinitcpio rescue hook changed; review Winstaller console handoff'
+        return 1
+    fi
+    sed -i '/^launch_interactive_shell() {/a\    /usr/local/bin/winstaller-boot --emergency || :' "$BUILDROOT/init_functions"
+}

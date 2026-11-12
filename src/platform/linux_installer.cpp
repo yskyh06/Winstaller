@@ -1,4 +1,5 @@
 #include "platform/linux_installer.hpp"
+#include "platform/update_media.hpp"
 #include "platform/http_downloader.hpp"
 #include "platform/process_runner.hpp"
 
@@ -895,6 +896,8 @@ LinuxInstallResult LinuxInstaller::execute(const LinuxInstallOptions& opts) {
         return result;
     };
 
+    if(!opts.dry_run && boot_target_status(opts.target_disk_path)!=BootTargetStatus::Allowed)
+        return fail(LinuxPipelineStep::PreCheck,"The boot medium is protected, or its identity is unavailable. Reboot with the original medium connected.");
     // 1. PreCheck
     if (opts.target_disk_path.empty()) {
         return fail(LinuxPipelineStep::PreCheck, "Target disk path must not be empty");
@@ -992,6 +995,9 @@ LinuxInstallResult LinuxInstaller::execute(const LinuxInstallOptions& opts) {
             dl_opt.url = opts.download_url;
             dl_opt.destination_path = iso_path;
             dl_opt.expected_sha256 = opts.expected_sha256;
+            dl_opt.strict_official_source=opts.strict_official_source;
+            dl_opt.expected_size=opts.expected_size;
+            dl_opt.status_callback = opts.download_status_callback;
 
             int last_reported_pct = -1;
             dl_opt.progress_callback = [&](std::uint64_t dlnow, std::uint64_t dltotal) -> bool {
@@ -1026,6 +1032,13 @@ LinuxInstallResult LinuxInstaller::execute(const LinuxInstallOptions& opts) {
             report(LinuxPipelineStep::AcquireImage, 55, "Downloaded and loop-mounted ISO image");
         }
     } else {
+        if (opts.download_status_callback) {
+            DownloadStatus local;
+            local.phase = DownloadPhase::Cached;
+            local.transport = DownloadTransport::Local;
+            local.hash = DownloadHash::NotProvided;
+            opts.download_status_callback(local);
+        }
         report(LinuxPipelineStep::AcquireImage, 55, "Using local image layer(s)");
     }
 

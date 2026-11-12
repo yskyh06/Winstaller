@@ -1,0 +1,19 @@
+#!/usr/bin/ash
+run_earlyhook() {
+    case " $(cat /proc/cmdline) " in
+        *' winstaller.progress=1 '*)
+            /usr/local/bin/winstaller-boot --start || :
+            ;;
+    esac
+}
+run_latehook() {
+    [ -f /run/winstaller-boot/enabled ] || return 0
+    /usr/local/bin/winstaller-boot --state 85 'Starting services' || :
+}
+run_cleanuphook() {
+    [ -f /run/winstaller-boot/enabled ] || return 0
+    /usr/local/bin/winstaller-boot --pause || :
+}
+run_emergencyhook() {
+    /usr/local/bin/winstaller-boot --emergency || :
+}

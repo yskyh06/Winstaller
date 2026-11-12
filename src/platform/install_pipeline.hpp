@@ -1,4 +1,5 @@
 #pragma once
+#include "core/download_status.hpp"
 
 #include "core/disk_target.hpp"
 #include "core/esd_catalog.hpp"
@@ -39,6 +40,7 @@ struct PipelineOptions {
     // Windows ESD Target (version, language, architecture, download URL)
     EsdTarget esd_target = get_default_esd_target();
     // Index within the ESD/WIM image (defaults to 4 for Windows 11 Home)
+    bool strict_image_selector = false;
     int image_index = 4;
     // Preferred edition name for automatic Full ESD index resolution
     std::string edition_preference = "Windows 11 Home";
@@ -53,6 +55,7 @@ struct PipelineOptions {
     // When true, simulates all hardware modifications (partitioning, formatting, mount, efibootmgr)
     bool dry_run = false;
     // Optional callback for user progress reporting: (step, percent 0-100, message)
+    std::function<void(const DownloadStatus&)> download_status_callback;
     std::function<void(PipelineStep step, int percent, const std::string& message)> progress_callback;
 };
 

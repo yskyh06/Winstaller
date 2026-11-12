@@ -14,6 +14,8 @@ struct WimImageInfo {
     int index = 1;
     std::string name;
     std::string description;
+    std::string architecture;
+    std::string installation_type;
     std::uint64_t total_bytes = 0;
 };
 
@@ -38,6 +40,9 @@ class WimDeployer {
 public:
     // Parses image index list from wimlib-imagex info stdout
     [[nodiscard]] static std::vector<WimImageInfo> parse_info_output(const std::string& info_stdout);
+
+    // Signed catalog selections never fall back to a different edition or architecture.
+    [[nodiscard]] static std::optional<WimImageInfo> resolve_exact_image(const std::vector<WimImageInfo>& images,const std::string& name);
 
     // Queries image info from an ESD/WIM file
     [[nodiscard]] static std::vector<WimImageInfo> get_image_info(

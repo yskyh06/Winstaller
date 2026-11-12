@@ -1,4 +1,5 @@
 #pragma once
+#include "core/download_status.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -67,6 +68,8 @@ struct LinuxInstallOptions {
     std::vector<std::string> image_layer_paths; // paths to .squashfs or .erofs files
     std::string download_url;
     std::string expected_sha256;
+    bool strict_official_source=false;
+    std::uint64_t expected_size=0;
     std::string kernel_source_path; // optional relative path inside ISO (e.g. "arch/boot/x86_64/vmlinuz-linux")
     std::string mount_root = "/mnt/litewin_linux";
     std::string hostname = "litewin-pc";
@@ -75,6 +78,7 @@ struct LinuxInstallOptions {
     std::string locale = "en_US.UTF-8";
     std::vector<ForeignOsEntry> foreign_os_entries;
     bool dry_run = false;
+    std::function<void(const DownloadStatus&)> download_status_callback;
     std::function<void(LinuxPipelineStep step, int percent, const std::string& message)> progress_callback;
 };
 

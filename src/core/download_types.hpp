@@ -1,4 +1,5 @@
 #pragma once
+#include "core/download_status.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -46,6 +47,8 @@ struct DownloadSessionCache {
 }
 
 struct DownloadOptions {
+    bool strict_official_source=false;
+    std::uint64_t expected_size=0;
     std::string url;
     std::string destination_path;
     std::string expected_sha256;          // Optional; if non-empty, triggers hash verification
@@ -55,9 +58,11 @@ struct DownloadOptions {
     std::uint32_t low_speed_time_seconds = 30;
     std::string expected_etag;            // If set and changes, aborts/resets partial file
     std::function<bool(std::uint64_t downloaded, std::uint64_t total)> progress_callback;
+    std::function<void(const DownloadStatus&)> status_callback;
 };
 
 struct DownloadResult {
+    DownloadStatus status;
     bool success = false;
     DownloadErrorKind error_kind = DownloadErrorKind::none;
     long http_status_code = 0;

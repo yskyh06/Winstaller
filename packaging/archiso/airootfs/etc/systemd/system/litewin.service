@@ -1,7 +1,7 @@
 [Unit]
 Description=Winstaller Automated Windows Deployment Service
-After=network-online.target systemd-networkd.service NetworkManager.service dhcpcd.service iwd.service
-Wants=network-online.target
+After=systemd-vconsole-setup.service winstaller-progress.service winstaller-services-ready.service network.target systemd-networkd.service NetworkManager.service dhcpcd.service iwd.service
+Wants=systemd-vconsole-setup.service winstaller-progress.service winstaller-services-ready.service network.target
 Conflicts=getty@tty1.service
 
 [Service]
@@ -16,7 +16,8 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 Restart=no
-ExecStopPost=-/usr/bin/systemctl reboot
+# A failed final configuration must leave the machine available for recovery.
+ExecStopPost=-/bin/sh -c 'if [ "$SERVICE_RESULT" = success ]; then /usr/bin/systemctl reboot; fi'
 
 [Install]
 WantedBy=multi-user.target

@@ -76,16 +76,14 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
         oss << "        </RunSynchronousCommand>\n";
     };
 
-    if (options.bypass_tpm_secureboot) {
+    if (options.bypass_tpm || options.bypass_tpm_secureboot) {
         add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassTPMCheck\" /t REG_DWORD /d 1 /f", "Bypass TPM Check");
+    }
+    if (options.bypass_secure_boot || options.bypass_tpm_secureboot) {
         add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassSecureBootCheck\" /t REG_DWORD /d 1 /f", "Bypass SecureBoot Check");
-        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassRAMCheck\" /t REG_DWORD /d 1 /f", "Bypass RAM Check");
-        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassStorageCheck\" /t REG_DWORD /d 1 /f", "Bypass Storage Check");
-        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\LabConfig\" /v \"BypassCPUCheck\" /t REG_DWORD /d 1 /f", "Bypass CPU Check");
-        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\Setup\\MoSetup\" /v \"AllowUpgradesWithUnsupportedTPMOrCPU\" /t REG_DWORD /d 1 /f", "Allow upgrades on unsupported CPU/TPM");
     }
 
-    if (options.bypass_nro) {
+    if (options.create_local_account && options.bypass_nro) {
         add_sync_cmd("reg.exe add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE\" /v \"BypassNRO\" /t REG_DWORD /d 1 /f", "Bypass NRO requirement");
     }
 
@@ -98,8 +96,7 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
     }
 
     if (options.disable_telemetry) {
-        add_sync_cmd("reg.exe add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection\" /v \"AllowTelemetry\" /t REG_DWORD /d 0 /f", "Disable Telemetry");
-        add_sync_cmd("reg.exe add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\DiagTrack\" /v \"Start\" /t REG_DWORD /d 4 /f", "Disable Diagnostics Tracking Service");
+        add_sync_cmd("reg.exe add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection\" /v \"AllowTelemetry\" /t REG_DWORD /d 1 /f", "Minimize optional diagnostics");
     }
 
     if (options.disable_advertising_id) {
@@ -128,26 +125,31 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
            "publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\">\n";
     oss << "      <OOBE>\n";
     oss << "        <HideEULAPage>true</HideEULAPage>\n";
-    oss << "        <HideLocalAccountScreen>true</HideLocalAccountScreen>\n";
-    oss << "        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>\n";
-    oss << "        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>\n";
+    if (options.create_local_account) {
+        oss << "        <HideLocalAccountScreen>true</HideLocalAccountScreen>\n";
+        oss << "        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>\n";
+        oss << "        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>\n";
+    }
     oss << "        <ProtectYourPC>3</ProtectYourPC>\n";
     oss << "      </OOBE>\n";
 
-    oss << "      <UserAccounts>\n";
-    oss << "        <LocalAccounts>\n";
-    oss << "          <LocalAccount wcm:action=\"add\">\n";
-    oss << "            <Name>" << escape_xml(options.username) << "</Name>\n";
-    oss << "            <Group>Administrators</Group>\n";
-    oss << "            <Password>\n";
-    oss << "              <Value>" << escape_xml(options.password) << "</Value>\n";
-    oss << "              <PlainText>true</PlainText>\n";
-    oss << "            </Password>\n";
-    oss << "          </LocalAccount>\n";
-    oss << "        </LocalAccounts>\n";
-    oss << "      </UserAccounts>\n";
+    if (options.create_local_account) {
+        oss << "      <UserAccounts>\n";
+        oss << "        <LocalAccounts>\n";
+        oss << "          <LocalAccount wcm:action=\"add\">\n";
+        oss << "            <Name>" << escape_xml(options.username) << "</Name>\n";
+        oss << "            <Group>Administrators</Group>\n";
+        oss << "            <Password>\n";
+        oss << "              <Value>" << escape_xml(options.password) << "</Value>\n";
+        oss << "              <PlainText>true</PlainText>\n";
+        oss << "            </Password>\n";
+        oss << "          </LocalAccount>\n";
+        oss << "        </LocalAccounts>\n";
+        oss << "      </UserAccounts>\n";
 
-    if (options.password.empty()) {
+    }
+
+    if (options.create_local_account && options.password.empty()) {
         oss << "      <AutoLogon>\n";
         oss << "        <Password>\n";
         oss << "          <Value></Value>\n";
@@ -169,11 +171,6 @@ std::string UnattendGenerator::generate_xml(const UnattendOptions& options) {
         oss << "          <Description>" << escape_xml(desc) << "</Description>\n";
         oss << "        </SynchronousCommand>\n";
     };
-
-    if (options.bypass_tpm_secureboot) {
-        add_logon_cmd("reg.exe add \"HKCU\\Control Panel\\UnsupportedHardwareNotificationCache\" /v \"SV1\" /t REG_DWORD /d 0 /f", "Hide unsupported hardware watermark SV1");
-        add_logon_cmd("reg.exe add \"HKCU\\Control Panel\\UnsupportedHardwareNotificationCache\" /v \"SV2\" /t REG_DWORD /d 0 /f", "Hide unsupported hardware watermark SV2");
-    }
 
     if (options.show_file_extensions) {
         add_logon_cmd("reg.exe add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v \"HideFileExt\" /t REG_DWORD /d 0 /f", "Show file extensions");
