@@ -1,0 +1,67 @@
+name: Publish OS catalog
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Increasing catalog revision
+        required: true
+        default: '1'
+        type: string
+      expires_days:
+        description: Metadata validity in days (1-365)
+        default: '30'
+        type: string
+      allow_empty:
+        description: Explicitly permit publishing an empty catalog
+        default: false
+        type: boolean
+      publish:
+        description: Publish verified metadata to the catalog branch
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  catalog:
+    if: github.repository == 'yskyh06/Winstaller' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/v1.1-multios')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: winstaller-metadata-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Build client metadata validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libcurl4-openssl-dev libssl-dev openssl python3
+          cmake -S . -B build -DBUILD_TESTING=OFF
+          cmake --build build --target validate_update -j2
+      - name: Prepare reviewed catalog
+        env:
+          REVISION: ${{ inputs.revision }}
+          EXPIRES_DAYS: ${{ inputs.expires_days }}
+          ALLOW_EMPTY: ${{ inputs.allow_empty }}
+        run: |
+          args=()
+          if [[ "$ALLOW_EMPTY" == true ]]; then args+=(--allow-empty); fi
+          python3 scripts/ci_updates.py prepare-catalog --source catalog/catalog-v1.json --output build/catalog/catalog-v1.json --revision "$REVISION" --expires-days "$EXPIRES_DAYS" "${args[@]}"
+      - name: Sign and validate with the installed client protocol
+        env:
+          WINSTALLER_SIGNING_KEY: ${{ secrets.WINSTALLER_CATALOG_SIGNING_KEY }}
+        run: python3 scripts/ci_updates.py sign --role catalog --key-id catalog-key-1 --source build/catalog/catalog-v1.json --output build/catalog/catalog-v1.signed.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: signed-os-catalog
+          path: build/catalog/*.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish catalog atomically
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/github_updates.py catalog

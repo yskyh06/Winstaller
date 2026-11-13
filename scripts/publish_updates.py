@@ -48,8 +48,10 @@ def sign_document(source, output, key_path, key_id):
     outer={'key_id':key_id,'payload_base64':base64.b64encode(data).decode('ascii'),'signature_base64':base64.b64encode(signature).decode('ascii')}
     write_new(output,(json.dumps(outer,separators=(',',':'))+'\n').encode())
 
-def prepare_release(iso,output,release_id,version,sequence,revision,expires_days,expected_hash):
+def prepare_release(iso,output,release_id,version,sequence,revision,expires_days,expected_hash,release_notes="Winstaller update.",trust_config=None):
     if not re.fullmatch('[a-z0-9_.-]{1,80}',release_id) or release_id in ('.','..'):raise ValueError('Invalid release ID')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,39}',version):raise ValueError('Invalid product version')
+    if not 1<=len(release_notes)<=2000 or any(ord(c)<32 or ord(c)>126 for c in release_notes):raise ValueError('Release notes must be printable English text')
     if sequence<1 or revision<1 or not 1<=expires_days<=365:raise ValueError('Invalid release counters or expiry')
     if digest(iso).lower()!=expected_hash.lower():raise ValueError('Source ISO checksum mismatch')
     if output.exists():raise ValueError('Output directory already exists')
@@ -58,12 +60,19 @@ def prepare_release(iso,output,release_id,version,sequence,revision,expires_days
     document={'document_type':'release','schema_version':1,'revision':revision,'published_at':now,'expires_at':now+86400*expires_days,
               'release_id':release_id,'release_sequence':sequence,'version':version,'channel':'stable','architecture':'x64',
               'minimum_updater_api':1,'usb_layout_versions':[2],'boot_abi':'winstaller-slots-v1',
-              'release_notes':'Replace with reviewed English release notes before signing.','components':[]}
+              'release_notes':release_notes,'components':[]}
     with tempfile.TemporaryDirectory(prefix='winstaller-release-') as scratch:
         subprocess.run(['7z','x','-y','-o'+scratch,str(iso),*COMPONENTS.values()],check=True,capture_output=True)
         rootfs=Path(scratch)/COMPONENTS['rootfs']
         config=subprocess.run(['unsquashfs','-cat',str(rootfs),'etc/winstaller/updates.json'],check=True,capture_output=True)
-        if parse_json(config.stdout).get('release_sequence')!=sequence:
+        installed_config=parse_json(config.stdout)
+        installed_version=subprocess.run(['unsquashfs','-cat',str(rootfs),'etc/winstaller-version'],check=True,capture_output=True).stdout.decode().strip()
+        if installed_version!=version:raise ValueError('ISO product version differs from release metadata')
+        if trust_config is not None:
+            expected_config=parse_json(Path(trust_config).read_bytes())
+            expected_config['release_sequence']=sequence
+            if installed_config!=expected_config:raise ValueError('ISO trust configuration differs from reviewed configuration')
+        if installed_config.get('release_sequence')!=sequence:
             raise ValueError('ISO release_sequence differs; rebuild with LITEWIN_RELEASE_SEQUENCE set before preparing assets')
         for role,relative in COMPONENTS.items():
             source=Path(scratch)/relative
@@ -89,9 +98,11 @@ def main():
     release.add_argument('--output',type=Path,required=True);release.add_argument('--release-id',required=True)
     release.add_argument('--version',required=True);release.add_argument('--sequence',type=int,required=True)
     release.add_argument('--revision',type=int,required=True);release.add_argument('--expires-days',type=int,default=30)
+    release.add_argument('--release-notes',default='Winstaller update.')
+    release.add_argument('--trust-config',type=Path)
     args=parser.parse_args()
     try:
         if args.action=='sign':sign_document(args.input,args.output,args.key,args.key_id)
-        else:prepare_release(args.iso,args.output,args.release_id,args.version,args.sequence,args.revision,args.expires_days,args.iso_sha256)
+        else:prepare_release(args.iso,args.output,args.release_id,args.version,args.sequence,args.revision,args.expires_days,args.iso_sha256,args.release_notes,args.trust_config)
     except (ValueError,OSError,subprocess.CalledProcessError) as error:parser.exit(1,str(error)+'\n')
 if __name__=='__main__':main()

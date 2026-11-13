@@ -1,0 +1,127 @@
+name: Build and publish Winstaller
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: New immutable GitHub release tag
+        default: release-2
+        required: true
+        type: string
+      version:
+        description: Product version embedded in the ISO
+        default: '1.2.0'
+        required: true
+        type: string
+      sequence:
+        description: Increasing ISO release sequence
+        default: '2'
+        required: true
+        type: string
+      revision:
+        description: Increasing stable metadata revision
+        default: '2'
+        required: true
+        type: string
+      expires_days:
+        description: Metadata validity in days (1-365)
+        default: '30'
+        type: string
+      release_notes:
+        description: Reviewed printable English release notes
+        default: Winstaller installer and update improvements.
+        type: string
+      publish:
+        description: Sign, publish GitHub Release and update stable metadata
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.repository == 'yskyh06/Winstaller' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/v1.1-multios')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Build and test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libcurl4-openssl-dev libssl-dev openssl python3 p7zip-full squashfs-tools genisoimage
+          cmake -S . -B build -DBUILD_TESTING=ON
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
+          python3 tests/update_publisher_tests.py build/validate_update
+      - name: Build ISO with matching product identity
+        env:
+          LITEWIN_RELEASE_SEQUENCE: ${{ inputs.sequence }}
+          LITEWIN_PRODUCT_VERSION: ${{ inputs.version }}
+          LITEWIN_ISO_OUT_DIR: ${{ github.workspace }}/build/release-iso
+        run: bash scripts/build_iso_docker.sh
+      - name: Prepare and verify complete release components
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          VERSION: ${{ inputs.version }}
+          SEQUENCE: ${{ inputs.sequence }}
+          REVISION: ${{ inputs.revision }}
+          EXPIRES_DAYS: ${{ inputs.expires_days }}
+          NOTES: ${{ inputs.release_notes }}
+        run: |
+          mapfile -t images < <(find build/release-iso -maxdepth 1 -type f -name '*.iso')
+          [[ ${#images[@]} == 1 ]]
+          checksum=$(sha256sum "${images[0]}")
+          python3 scripts/publish_updates.py prepare-release --iso "${images[0]}" --iso-sha256 "${checksum%% *}" --output build/release-assets --release-id "$RELEASE_ID" --version "$VERSION" --sequence "$SEQUENCE" --revision "$REVISION" --expires-days "$EXPIRES_DAYS" --release-notes "$NOTES" --trust-config packaging/archiso/airootfs/etc/winstaller/updates.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-iso
+          path: |
+            build/release-iso/*.iso
+            build/release-iso/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-assets
+          path: build/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    concurrency:
+      group: winstaller-metadata-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-iso
+          path: incoming/iso
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: incoming/assets
+      - name: Build trusted client validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libcurl4-openssl-dev libssl-dev openssl python3 gh
+          cmake -S . -B build -DBUILD_TESTING=OFF
+          cmake --build build --target validate_update -j2
+      - name: Sign release metadata and verify public key
+        env:
+          WINSTALLER_SIGNING_KEY: ${{ secrets.WINSTALLER_RELEASE_SIGNING_KEY }}
+        run: python3 scripts/ci_updates.py sign --role release --key-id release-key-1 --source incoming/assets/release-v1.json --output incoming/assets/release-v1.signed.json
+      - name: Publish complete release, then stable metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: python3 scripts/github_updates.py release --commit "$SOURCE_COMMIT"

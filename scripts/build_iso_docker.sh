@@ -11,6 +11,11 @@ if [[ ! "$RELEASE_SEQUENCE" =~ ^[1-9][0-9]{0,8}$ ]]; then
     echo '[ERROR] LITEWIN_RELEASE_SEQUENCE must be a positive integer with at most 9 digits.' >&2
     exit 1
 fi
+PRODUCT_VERSION="${LITEWIN_PRODUCT_VERSION:-}"
+if [[ -n "$PRODUCT_VERSION" && ! "$PRODUCT_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$ ]]; then
+    echo "[ERROR] Invalid LITEWIN_PRODUCT_VERSION." >&2
+    exit 1
+fi
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
@@ -20,6 +25,7 @@ OUT_DIR="$(cd "${OUT_DIR}" && pwd)"
 echo "[INFO] Starting Docker-based Archiso build (${ARCH_IMAGE})..."
 
 docker run --rm --privileged \
+    -e WINSTALLER_PRODUCT_VERSION="${PRODUCT_VERSION}" \
     -e WINSTALLER_RELEASE_SEQUENCE="${RELEASE_SEQUENCE}" \
     -v "${PROJECT_ROOT}:/workspace:ro" \
     -v "${PROFILE_DIR}:/profile:ro" \
@@ -58,7 +64,7 @@ docker run --rm --privileged \
         chmod 0755 /tmp/profile-merged/airootfs/usr/local/bin/litewin /tmp/profile-merged/airootfs/usr/local/bin/winstaller-boot
         declare -A file_permissions
         source /profile/profiledef.sh
-        python /workspace/scripts/prepare_boot_progress.py /tmp/profile-merged /usr/lib/initcpio/hooks/archiso \"\$iso_version\"
+        python /workspace/scripts/prepare_boot_progress.py /tmp/profile-merged /usr/lib/initcpio/hooks/archiso \"\${WINSTALLER_PRODUCT_VERSION:-\$iso_version}\"
         pacman -Q archiso mkinitcpio mkinitcpio-archiso > /out/boot-component-versions.txt
 
         mkdir -p /tmp/profile-merged/airootfs/etc/systemd/system/multi-user.target.wants

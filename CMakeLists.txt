@@ -304,3 +304,8 @@ endif()
 if(BUILD_TESTING AND Python3_Interpreter_FOUND)
     add_test(NAME updates.usb_layout COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/update_usb_layout_tests.py")
 endif()
+
+if(BUILD_TESTING AND TARGET validate_update AND Python3_Interpreter_FOUND)
+    add_test(NAME updates.ci_publication COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ci_updates_tests.py" "$<TARGET_FILE:validate_update>")
+    set_tests_properties(updates.ci_publication PROPERTIES TIMEOUT 60)
+endif()
